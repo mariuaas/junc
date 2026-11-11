@@ -12,12 +12,16 @@ The module returns a plain table with `default`, `next(name)` and `presets`. Eac
 | --- | --- |
 | `theme(terminal)` | Returns a plain table containing the ten colors below |
 | `gutter` | Plain table with boolean `visible` and `line_numbers` |
+| `minibuffer` | Optional plain table with `fg`, `bg`, `prompt_fg` and `output_fg` colors |
+| `syntax` | Optional table of Litura token-group styles; see [syntax highlighting](syntax.md) |
 | `status_visible` | Boolean; false releases the status row to the document |
 | `status(state)` | Returns one UTF-8 line, at most 4096 bytes, without control characters |
 
 `default` names an existing preset. `next(name)` returns an existing preset name; the bundled Ctrl-P command uses it. The active name survives reload, so a replacement module must still define that name. Names contain 1–63 bytes of printable UTF-8. Metatables on configuration tables are rejected.
 
 The theme fields are `fg`, `bg`, `selection_fg`, `selection_bg`, `cursor_fg`, `cursor_bg`, `gutter_fg`, `gutter_bg`, `status_fg` and `status_bg`. Each color is `"default"`, an integer palette index from 0 through 255, or an RGB string such as `"#b8ce9a"`.
+
+Minibuffer colors use the same color representation. Missing foreground/background inherit ordinary text colors; prompt/output foregrounds inherit the gutter foreground. Selection and cursor retain their normal theme roles. The table is validated in every preset during the same reload transaction. Zig reserves up to three rows only while input is focused; Lua supplies colors without controlling cell layout. See [input contexts and the live REPL](minibuffer.md).
 
 For example, change a shipped preset's `status` function to:
 
@@ -46,7 +50,7 @@ Syntax errors, invalid values, missing callbacks and callback errors retain the 
 
 Document text, revisions, sessions, anchors, selection and undo history remain owned by the same Litura instance. The Surface and terminal also survive reload. Viewport offsets are retained; normal visibility adjustment can still scroll when a changed gutter or status row reduces the space available for the cursor. Lua-local variables reset with the VM, as in command reload.
 
-Zig continues to own cell layout, width measurement, clipping, tab stops, scroll mapping and terminal lifetimes. Presentation code does not receive native mutation callbacks or libvaxis objects. The interface describes semantic roles rather than native cells: future decorations or additional visual regions can add declarative fields without exposing terminal internals. This workload implements only document, gutter and status regions.
+Zig continues to own cell layout, width measurement, clipping, tab stops, scroll mapping and terminal lifetimes. Presentation code does not receive libvaxis objects, and native mutation callbacks reject calls outside explicit command evaluation. The interface describes semantic roles rather than native cells: future decorations or additional visual regions can add declarative fields without exposing terminal internals. The current regions are document, gutter, status and the focused minibuffer.
 
 ## Verification
 

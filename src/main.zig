@@ -2,7 +2,7 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const junc = @import("junc");
-const Surface = @import("Surface.zig");
+const Surface = @import("surface");
 const Event = union(enum) { key_press: vaxis.Key, winsize: vaxis.Winsize, color_report: vaxis.Color.Report };
 pub const panic = vaxis.panic_handler;
 pub const std_options: std.Options = .{ .log_level = .warn };
@@ -92,6 +92,8 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn keyName(key: vaxis.Key, buffer: []u8) []const u8 {
+    if (key.matches('x', .{ .alt = true })) return "alt-x";
+    if (key.matches(':', .{ .alt = true })) return "alt-colon";
     const special: ?[]const u8 = switch (key.codepoint) {
         vaxis.Key.left => "left",
         vaxis.Key.right => "right",
@@ -103,13 +105,26 @@ fn keyName(key: vaxis.Key, buffer: []u8) []const u8 {
         vaxis.Key.delete => "delete",
         vaxis.Key.enter => "enter",
         vaxis.Key.tab => "tab",
+        vaxis.Key.escape => "escape",
         else => null,
     };
     if (special) |name| {
-        return std.fmt.bufPrint(buffer, "{s}{s}", .{ if (key.mods.shift) "shift-" else "", name }) catch "";
+        return std.fmt.bufPrint(buffer, "{s}{s}{s}{s}", .{
+            if (key.mods.ctrl) "ctrl-" else "",
+            if (key.mods.alt) "alt-" else "",
+            if (key.mods.shift) "shift-" else "",
+            name,
+        }) catch "";
     }
-    if (key.mods.ctrl and key.codepoint < 128) {
-        return std.fmt.bufPrint(buffer, "ctrl-{c}", .{@as(u8, @intCast(key.codepoint))}) catch "";
+    if (key.mods.ctrl or key.mods.alt) {
+        var bytes: [4]u8 = undefined;
+        const length = std.unicode.utf8Encode(key.codepoint, &bytes) catch return "";
+        return std.fmt.bufPrint(buffer, "{s}{s}{s}{s}", .{
+            if (key.mods.ctrl) "ctrl-" else "",
+            if (key.mods.alt) "alt-" else "",
+            if (key.mods.shift) "shift-" else "",
+            if (key.codepoint == ' ') "space" else bytes[0..length],
+        }) catch "";
     }
     return "text";
 }

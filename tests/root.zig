@@ -160,4 +160,7 @@ test "deleting a separator collapses the cursor onto the joined cluster" {
 
 comptime {
     _ = @import("presentation_test.zig");
+    _ = @import("syntax_test.zig");
+    _ = @import("minibuffer_test.zig");
+    _ = @import("keymap_test.zig");
 }

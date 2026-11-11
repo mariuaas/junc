@@ -1,5 +1,6 @@
 //! Validated, owned presentation values. Lua chooses policy; no terminal or document writes.
 const std = @import("std");
+const syntax = @import("syntax.zig");
 const lua = @import("lua");
 
 /// Embedded fallback, also used when no presentation file is present.
@@ -69,8 +70,26 @@ pub const Name = struct {
     }
 };
 
+/// An omitted category or foreground inherits base text. Attributes default to false.
+pub const SyntaxStyle = struct {
+    fg: ?Color = null,
+    bold: bool = false,
+    italic: bool = false,
+    underline: bool = false,
+};
+
+/// Optional prompt colors inherit the current theme; no terminal structures cross into Lua.
+pub const MinibufferStyle = struct {
+    fg: ?Color = null,
+    bg: ?Color = null,
+    prompt_fg: ?Color = null,
+    output_fg: ?Color = null,
+};
+
 pub const Frame = struct {
     theme: Theme,
+    minibuffer: MinibufferStyle = .{},
+    syntax: [syntax.category_count]SyntaxStyle = @splat(.{}),
     gutter_visible: bool,
     line_numbers: bool,
     status_visible: bool,
@@ -196,6 +215,75 @@ pub fn defaultName(state: *lua.lua_State) !Name {
     return Name.init(try textAt(state, -1));
 }
 
+fn optionalBoolean(state: *lua.lua_State, name: [:0]const u8) !bool {
+    lua.lua_getfield(state, -1, name);
+    const missing = lua.lua_type(state, -1) == lua.LUA_TNIL;
+    pop(state);
+    return if (missing) false else boolean(state, name);
+}
+
+// Reject misspelled categories and attributes rather than accepting a broken live palette.
+fn syntaxPalette(state: *lua.lua_State) ![syntax.category_count]SyntaxStyle {
+    var palette: [syntax.category_count]SyntaxStyle = @splat(.{});
+    lua.lua_getfield(state, -1, "syntax");
+    defer pop(state);
+    if (lua.lua_type(state, -1) == lua.LUA_TNIL) return palette;
+    try plainTable(state);
+    const table = lua.lua_gettop(state);
+    lua.lua_pushnil(state);
+    while (lua.lua_next(state, table) != 0) {
+        const name = try textAt(state, -2);
+        const category = std.meta.stringToEnum(syntax.Category, name) orelse
+            return error.InvalidPresentation;
+        try plainTable(state);
+        var token_style: SyntaxStyle = .{
+            .bold = try optionalBoolean(state, "bold"),
+            .italic = try optionalBoolean(state, "italic"),
+            .underline = try optionalBoolean(state, "underline"),
+        };
+        lua.lua_getfield(state, -1, "fg");
+        if (lua.lua_type(state, -1) != lua.LUA_TNIL) token_style.fg = try colorAt(state);
+        pop(state);
+        const entry = lua.lua_gettop(state);
+        lua.lua_pushnil(state);
+        while (lua.lua_next(state, entry) != 0) {
+            const key = try textAt(state, -2);
+            if (!std.mem.eql(u8, key, "fg") and !std.mem.eql(u8, key, "bold") and
+                !std.mem.eql(u8, key, "italic") and !std.mem.eql(u8, key, "underline"))
+                return error.InvalidPresentation;
+            pop(state);
+        }
+        palette[@intFromEnum(category)] = token_style;
+        pop(state);
+    }
+    return palette;
+}
+
+fn minibufferStyle(state: *lua.lua_State) !MinibufferStyle {
+    var result: MinibufferStyle = .{};
+    lua.lua_getfield(state, -1, "minibuffer");
+    defer pop(state);
+    if (lua.lua_type(state, -1) == lua.LUA_TNIL) return result;
+    try plainTable(state);
+    inline for (std.meta.fields(MinibufferStyle)) |field| {
+        lua.lua_getfield(state, -1, field.name);
+        if (lua.lua_type(state, -1) != lua.LUA_TNIL) @field(result, field.name) = try colorAt(state);
+        pop(state);
+    }
+    const table = lua.lua_gettop(state);
+    lua.lua_pushnil(state);
+    while (lua.lua_next(state, table) != 0) {
+        const key = try textAt(state, -2);
+        var known = false;
+        inline for (std.meta.fields(MinibufferStyle)) |field| {
+            if (std.mem.eql(u8, key, field.name)) known = true;
+        }
+        if (!known) return error.InvalidPresentation;
+        pop(state);
+    }
+    return result;
+}
+
 /// Resolves policy and validates a full frame before exposing any new values to rendering.
 /// Protected callbacks receive snapshots only. Failure leaves caller-owned frames unchanged.
 pub fn resolve(state: *lua.lua_State, name: Name, terminal: Terminal, context: Context) !Frame {
@@ -206,6 +294,8 @@ pub fn resolve(state: *lua.lua_State, name: Name, terminal: Terminal, context: C
     lua.lua_rawget(state, -2);
     try plainTable(state);
     const preset_index = lua.lua_gettop(state);
+    const palette = try syntaxPalette(state);
+    const minibuffer = try minibufferStyle(state);
     const status_visible = try boolean(state, "status_visible");
     lua.lua_getfield(state, -1, "gutter");
     try plainTable(state);
@@ -230,7 +320,15 @@ pub fn resolve(state: *lua.lua_State, name: Name, terminal: Terminal, context: C
     if (lua.lua_pcall(state, 1, 1, 0) != 0) return error.InvalidPresentation;
     const status = try textAt(state, -1);
     if (status.len > 4096 or !validText(status)) return error.InvalidPresentation;
-    var frame: Frame = .{ .theme = theme, .gutter_visible = gutter_visible, .line_numbers = line_numbers, .status_visible = status_visible, .status_len = status.len };
+    var frame: Frame = .{
+        .syntax = palette,
+        .minibuffer = minibuffer,
+        .theme = theme,
+        .gutter_visible = gutter_visible,
+        .line_numbers = line_numbers,
+        .status_visible = status_visible,
+        .status_len = status.len,
+    };
     @memcpy(frame.status_bytes[0..status.len], status);
     return frame;
 }

@@ -9,6 +9,18 @@ return {
   next = function(name) return name == 'classic' and 'minimal' or 'classic' end,
   presets = {
     classic = {
+      minibuffer = {prompt_fg='#82aaff', output_fg='#aab2c0'},
+      syntax = {
+        keyword = {fg='#c792ea', bold=true},
+        string = {fg='#b8ce9a'},
+        comment = {fg='#718779', italic=true},
+        number = {fg='#edcf8e'},
+        constant = {fg='#edcf8e'},
+        ['function'] = {fg='#82aaff'},
+        identifier = {},
+        operator = {fg='#89cdd2'},
+        punctuation = {fg='#aab2c0'},
+      },
       theme = function(t)
         return {fg=t.foreground, bg=t.background,
           selection_fg='#ffffff', selection_bg=t.palette[4],
@@ -23,6 +35,13 @@ return {
       status = classic_status,
     },
     minimal = {
+      minibuffer = {prompt_fg='#edcf8e', output_fg='#94aa99'},
+      syntax = {
+        keyword = {fg='#edcf8e', bold=true},
+        string = {fg='#b8ce9a'},
+        comment = {fg='#718779', italic=true},
+        ['function'] = {underline=true},
+      },
       theme = function(t)
         return {fg='#c8d5c8', bg='#18221e',
           selection_fg='#18221e', selection_bg='#b8ce9a',
