@@ -67,10 +67,17 @@ for _, direction in ipairs({'left','right','up','down','home','end'}) do
   M.bind(d, d); M.bind('shift-'..d, 'select-'..d)
 end
 M.command('select-all', function(c) return {kind='move', position=c.count, mark=0} end)
-for _, name in ipairs({'save','quit','reload','undo','redo'}) do
+for _, name in ipairs({'quit','reload','undo','redo'}) do
   local n = name
   M.command(n, function() return {kind=n} end)
 end
+M.command('save', function(c)
+  if c.surface=='document' and not c.path then
+    M.invoke('save-as')
+    return
+  end
+  return {kind='save'}
+end)
 M.bind('backspace','backspace'); M.bind('delete','delete'); M.bind('enter','enter'); M.bind('tab','tab')
 M.bind('ctrl-s','save'); M.bind('ctrl-q','quit'); M.bind('ctrl-r','reload')
 M.bind('ctrl-a','select-all'); M.bind('ctrl-z','undo'); M.bind('ctrl-y','redo')

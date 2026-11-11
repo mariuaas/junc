@@ -19,7 +19,7 @@ Use M-x (or Ctrl-O) for these ordinary Lua commands:
 
 Tab and Up/Down use the existing minibuffer completion interface. Labels include the stable buffer id, display name, current-buffer marker and dirty marker. Selection uses ids, so files with equal basenames remain unambiguous. The chooser lists buffers; filename completion is not implemented.
 
-Ctrl-S saves the selected buffer. A scratch buffer without a filename uses `scratch.txt` in that client's working directory; use `save-as` to choose another name. Saving to a canonical path already owned by another buffer is rejected. Ctrl-Q **detaches immediately**, including with unsaved changes, because the documents remain in the server. Use `kill-buffer` to discard a buffer explicitly.
+Ctrl-S saves the selected buffer. For an unnamed scratch buffer, Ctrl-S opens the `save-as` filename prompt. Enter a filename relative to the client's working directory, or cancel with Escape/Ctrl-G to keep editing without saving. Empty input keeps the prompt open. Once named, later saves use that path. Saving to a canonical path already owned by another buffer is rejected. Ctrl-Q **detaches immediately**, including with unsaved changes, because the documents remain in the server. Use `kill-buffer` to discard a buffer explicitly.
 
 Switching away preserves this attachment's cursor, selection and viewport for that buffer. The Lua VM, commands, keymaps, presentation preset and local minibuffer stay alive across switching. Reload replaces Lua policy without reopening buffers or sessions. A later attachment starts fresh client policy, viewports and interaction sessions, while document text, revisions, dirty state and undo/redo history remain shared in the running server.
 

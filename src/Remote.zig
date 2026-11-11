@@ -294,15 +294,9 @@ pub fn kill(self: *Remote, id: u32, discard: bool) !void {
     }));
 }
 
+/// Saves to the supplied path or existing buffer path; unnamed buffers require an explicit path.
 pub fn save(self: *Remote, options: struct { path: ?[]const u8 = null }) !void {
-    const path = options.path;
-    const explicit: ?[]const u8 = if (path) |value|
-        value
-    else if (self.current().path == null)
-        "scratch.txt"
-    else
-        null;
-    const absolute = if (explicit) |value| try self.absolutePath(value) else null;
+    const absolute = if (options.path) |path| try self.absolutePath(path) else null;
     defer if (absolute) |value| self.allocator.free(value);
     try self.acceptState(try self.call(.{
         .id = 0,

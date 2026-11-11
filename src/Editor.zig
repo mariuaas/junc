@@ -513,9 +513,10 @@ fn dispatchInto(
     }
     self.report("");
     if (std.mem.eql(u8, kind, "save")) {
+        if (target.path() == null) return error.PathRequired;
         switch (target) {
             .local => |value| {
-                try value.document.save(if (value.document.path == null) "scratch.txt" else null);
+                try value.document.save(null);
             },
             .remote => |value| {
                 try self.rememberViewport();

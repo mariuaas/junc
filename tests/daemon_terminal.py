@@ -60,8 +60,30 @@ return p
         terminal.send(b'\r')
         assert terminal.state()[0] == b'3'
         terminal.send(b'scratch dirty')
+        unrelated = root / 'scratch.txt'
+        unrelated.write_text('keep this unrelated file')
+        before_save = terminal.state()
+        terminal.send(b'\x13')
+        assert b'Save as: ' in terminal.snapshot()[1]
+        assert terminal.state() == before_save
+        terminal.send(b'\r')
+        assert b'A filename is required' in terminal.snapshot()[1]
+        terminal.send(b'cancelled.lua\x1b')
+        assert terminal.state() == before_save
+        assert not (root / 'cancelled.lua').exists()
+        assert unrelated.read_text() == 'keep this unrelated file'
+        terminal.send(b'\x13')
+        filename = 'named scratch 界.lua'
+        terminal.send(filename.encode() + b'\r')
+        assert (root / filename).read_text() == 'scratch dirty'
+        assert terminal.state() == before_save, 'naming scratch changed document or interaction revisions'
+        terminal.send(b'!\x13')
+        assert (root / filename).read_text() == 'scratch dirty!'
+        assert b'Save as: ' not in terminal.snapshot()[1]
+        assert unrelated.read_text() == 'keep this unrelated file'
+        terminal.send(b'?')
         terminal.command('kill-buffer')
-        assert b'Discard *scratch-' in terminal.snapshot()[1]
+        assert ('Discard ' + filename).encode() in terminal.snapshot()[1]
         terminal.send(b'no\r')
         assert b'Buffer retained' in terminal.snapshot()[1]
         terminal.send(b'\x07')

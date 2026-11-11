@@ -34,7 +34,7 @@ Arrow keys move, Shift selects, typing edits. Less obviously:
 
 | Key | Action |
 | --- | --- |
-| Ctrl-S | Save; unnamed scratch buffers go to `scratch.txt` |
+| Ctrl-S | Save; prompt for a filename if the buffer is unnamed |
 | Ctrl-Q | Detach, leaving buffers in server memory |
 | Ctrl-Z / Ctrl-Y | Undo / redo |
 | M-x / Ctrl-O | Run a named command |

@@ -28,6 +28,35 @@ fn evaluate(editor: *junc.Editor, source: []const u8) !void {
     try input(editor, "enter", "");
 }
 
+test "saving unnamed input prompts for a filename without changing document interaction or history" {
+    var editor = try junc.Editor.init(allocator, "scratch", null);
+    defer editor.deinit();
+    try input(&editor, "text", "X");
+    try input(&editor, "shift-right", "");
+    const before = try editor.mainTarget().snapshot(allocator);
+    defer allocator.free(before.selection);
+    const undo_count = editor.document.?.undo_stack.items.len;
+    try input(&editor, "ctrl-s", "");
+    try std.testing.expectEqual(junc.Minibuffer.Context.prompt, editor.minibuffer.context.?);
+    try std.testing.expectEqualStrings("Save as: ", editor.minibuffer.prompt());
+    try textIs(&editor.minibuffer.document, "");
+    try std.testing.expectError(error.UnavailableInMinibuffer, editor.dispatch("ctrl-s", ""));
+    try input(&editor, "enter", "");
+    try std.testing.expect(editor.minibuffer.context == .prompt);
+    try std.testing.expect(std.mem.indexOf(u8, lastOutput(&editor), "A filename is required") != null);
+    try input(&editor, "text", "cancelled.lua");
+    try input(&editor, "escape", "");
+    try std.testing.expect(editor.minibuffer.context == null);
+    try std.testing.expectEqual(@as(?[]const u8, null), editor.document.?.path);
+    try std.testing.expectEqual(before.revision, editor.document.?.revision);
+    try std.testing.expectEqual(before.interaction_revision, try editor.mainTarget().interactionRevision());
+    try std.testing.expectEqual(before.cursor, try editor.position());
+    try std.testing.expectEqual(before.mark, try editor.mark());
+    try std.testing.expectEqual(undo_count, editor.document.?.undo_stack.items.len);
+    try std.testing.expect(editor.document.?.dirty());
+    try textIs(editor.document.?, "Xscratch");
+}
+
 test "persistent Litura minibuffer edits Unicode and isolates main document selection and history" {
     var editor = try junc.Editor.init(allocator, "main", null);
     defer editor.deinit();

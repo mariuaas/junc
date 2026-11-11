@@ -26,7 +26,7 @@ Commands return nil or a declarative intent table:
 - `{kind='replace', start=first, finish=last, text=utf8}` replaces a half-open grapheme range and collapses selection after the inserted text. `editor.replace(context, text, first, last)` supplies selection defaults.
 - `{kind='move', position=offset, mark=optional_offset}` submits cursor and selection changes. `editor.move(context, offset, extend)` supplies selection defaults.
 - `{kind='undo'}` or `{kind='redo'}` submits Litura history intents.
-- `{kind='save'}`, `{kind='quit'}` and `{kind='reload'}` request editor-shell effects. `{kind='presentation', name=preset}` activates a validated Lua presentation without a document mutation.
+- `{kind='save'}`, `{kind='quit'}` and `{kind='reload'}` request editor-shell effects. The raw `save` intent requires an associated filename; the Lua `save` command opens the `save-as` prompt for an unnamed buffer. `{kind='presentation', name=preset}` activates a validated Lua presentation without a document mutation.
 
 After a submission, `editor.on_result(result)` receives `surface`, `buffer_id`, `kind`, the current `revision` and `interaction_revision`, plus `old_revision` and `new_revision` for successful results, `source` for edits, or `message` for rejection. Submission summaries capture the affected buffer and revision before the observer runs, so switching buffers in an observer cannot relabel the completed edit. The default observer stores `editor.last_result`; an extension can replace the observer. Observer failure is reported after the mutation has completed; it does not roll back the mutation. Ordinary and extension commands have identical access to this API. Source strings identify command names rather than the SPEC's typed event sources.
 
