@@ -11,15 +11,24 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const args = try init.minimal.args.toSlice(allocator);
     defer allocator.free(args);
+    if (args.len == 4 and std.mem.eql(u8, args[1], "--serve")) {
+        const lock_fd = try std.fmt.parseInt(c_int, args[2], 10);
+        var runtime_paths = try junc.paths.Runtime.init(allocator, .{ .directory = args[3] });
+        defer runtime_paths.deinit();
+        try junc.server.run(allocator, &runtime_paths, lock_fd);
+        return;
+    }
     if (args.len > 2) return error.ExpectedOneFile;
     const path: ?[]const u8 = if (args.len == 2) args[1] else null;
-    const text = if (path) |file| std.Io.Dir.cwd().readFileAlloc(init.io, file, allocator, .limited(junc.litura.BufferEngine.max_file_bytes)) catch |err| switch (err) {
-        error.FileNotFound => try allocator.dupe(u8, ""),
-        else => return err,
-    } else try allocator.dupe(u8, "");
-    defer allocator.free(text);
-    if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
-    var editor = try junc.Editor.init(allocator, text, path);
+    const executable = try std.process.executablePathAlloc(init.io, allocator);
+    defer allocator.free(executable);
+    var remote = try junc.Remote.connect(allocator, .{
+        .executable = executable,
+        .runtime_directory = init.environ_map.get("JUNC_RUNTIME_DIR"),
+    });
+    defer remote.deinit();
+    try remote.open(.{ .path = path });
+    var editor = try junc.Editor.initAttached(allocator, &remote);
     defer editor.deinit();
     editor.reloadFiles(.{ .commands = false }) catch |err| editor.report(@errorName(err));
     var surface: Surface = .{};
@@ -44,6 +53,7 @@ pub fn main(init: std.process.Init) !void {
     surface.monochrome = vx.caps.no_color;
     var redraw = true;
     while (!editor.quit) {
+        if (try remote.pollInvalidations()) redraw = true;
         const size = try tty.getWinsize();
         if (size.cols != vx.window().width or size.rows != vx.window().height) {
             try vx.resize(allocator, tty.writer(), size);
@@ -52,7 +62,7 @@ pub fn main(init: std.process.Init) !void {
         if (redraw) {
             try surface.draw(&editor, vx.window());
             try vx.render(tty.writer());
-            redraw = false;
+            redraw = surface.redraw_requested;
         }
         const event = try loop.tryEvent() orelse {
             try init.io.sleep(.fromMilliseconds(16), .real);
@@ -73,10 +83,7 @@ pub fn main(init: std.process.Init) !void {
                 var name_buffer: [64]u8 = undefined;
                 const name = keyName(key, &name_buffer);
                 var utf8: [4]u8 = undefined;
-                const input = key.text orelse if (!key.mods.ctrl and !key.mods.alt and key.codepoint >= 32 and key.codepoint < 0x110000 and (key.codepoint < 57344 or key.codepoint > 57454))
-                    utf8[0 .. std.unicode.utf8Encode(key.codepoint, &utf8) catch 0]
-                else
-                    "";
+                const input = keyText(key, &utf8);
                 if (editor.dispatch(name, input)) |result| {
                     if (result) |value| {
                         var owned = value;
@@ -84,14 +91,28 @@ pub fn main(init: std.process.Init) !void {
                         if (owned == .validation_report) editor.report(owned.validation_report.message);
                     }
                 } else |err| {
-                    if (err != error.LuaError) editor.report(@errorName(err));
+                    if (remote.fd < 0) return error.ConnectionLost;
+                    if (err != error.LuaError and err != error.ServerRejected) editor.report(@errorName(err));
                 }
             },
         }
     }
 }
 
-fn keyName(key: vaxis.Key, buffer: []u8) []const u8 {
+// libvaxis key identifiers occupy this private-use range and are not insertable text.
+fn keyText(key: vaxis.Key, buffer: *[4]u8) []const u8 {
+    if (key.text) |text| return text;
+    if (key.mods.ctrl or key.mods.alt or key.codepoint < 32 or
+        (key.codepoint >= 57344 and key.codepoint <= 57454) or
+        !std.unicode.utf8ValidCodepoint(key.codepoint))
+    {
+        return "";
+    }
+    const length = std.unicode.utf8Encode(key.codepoint, buffer) catch unreachable; // Valid scalar.
+    return buffer[0..length];
+}
+
+fn keyName(key: vaxis.Key, buffer: *[64]u8) []const u8 {
     if (key.matches('x', .{ .alt = true })) return "alt-x";
     if (key.matches(':', .{ .alt = true })) return "alt-colon";
     const special: ?[]const u8 = switch (key.codepoint) {
@@ -114,17 +135,18 @@ fn keyName(key: vaxis.Key, buffer: []u8) []const u8 {
             if (key.mods.alt) "alt-" else "",
             if (key.mods.shift) "shift-" else "",
             name,
-        }) catch "";
+        }) catch unreachable; // Modifier prefixes and the key name fit the fixed 64-byte buffer.
     }
     if (key.mods.ctrl or key.mods.alt) {
         var bytes: [4]u8 = undefined;
-        const length = std.unicode.utf8Encode(key.codepoint, &bytes) catch return "";
+        if (!std.unicode.utf8ValidCodepoint(key.codepoint)) return "";
+        const length = std.unicode.utf8Encode(key.codepoint, &bytes) catch unreachable; // Valid scalar.
         return std.fmt.bufPrint(buffer, "{s}{s}{s}{s}", .{
             if (key.mods.ctrl) "ctrl-" else "",
             if (key.mods.alt) "alt-" else "",
             if (key.mods.shift) "shift-" else "",
             if (key.codepoint == ' ') "space" else bytes[0..length],
-        }) catch "";
+        }) catch unreachable; // Modifier prefixes and the key name fit the fixed 64-byte buffer.
     }
     return "text";
 }

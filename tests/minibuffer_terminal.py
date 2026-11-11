@@ -12,11 +12,12 @@ import sys
 import tempfile
 import termios
 import time
+from daemon_support import DaemonRuntime, wait_ready
 
 repo = Path(__file__).resolve().parents[1]
 base = (repo / 'lua/presentation.lua').read_text()
 
-with tempfile.TemporaryDirectory(prefix='junc-minibuffer-') as directory:
+with tempfile.TemporaryDirectory(prefix='junc-minibuffer-') as directory, DaemonRuntime() as daemon:
     root = Path(directory)
     (root / 'lua').mkdir()
     (root / 'sample.lua').write_text('local value = 1\n')
@@ -43,7 +44,7 @@ return p
     supervisor = "import pathlib, subprocess, sys, termios; r=subprocess.run([sys.argv[1], 'sample.lua']); pathlib.Path('restored.txt').write_text(repr(termios.tcgetattr(0))); sys.exit(r.returncode)"
     process = subprocess.Popen([sys.executable, '-c', supervisor, str(repo / 'zig-out/bin/junc')],
         stdin=slave, stdout=slave, stderr=slave, cwd=root, preexec_fn=setup,
-        env=dict(os.environ, NO_COLOR='1', TERM='dumb'))
+        env=daemon.environment(dict(os.environ, NO_COLOR='1', TERM='dumb')))
     output = bytearray()
 
     def drain(seconds=.25):
@@ -84,6 +85,7 @@ return p
 
     try:
         drain(.6)
+        wait_ready(process, output, drain)
         send(b'\x1b[1;2C')  # Main selection survives all ordinary minibuffer operations.
         before = state(snapshot())
         assert before[0] == b'0' and before[2:] == (b'1', b'0'), before

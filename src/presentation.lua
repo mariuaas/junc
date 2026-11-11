@@ -1,7 +1,7 @@
 -- Presentation policy. No document mutation API is exposed to these callbacks.
 local function classic_status(s)
   return string.format(' junc | %s%s | %d:%d r%d i%d | %s | ^P minimal ^R reload',
-    s.path, s.dirty and ' *' or '', s.line, s.column,
+    (s.name or s.path), s.dirty and ' *' or '', s.line, s.column,
     s.revision, s.interaction_revision, s.message)
 end
 return {
@@ -52,7 +52,7 @@ return {
       gutter = {visible=false, line_numbers=false},
       status_visible = true,
       status = function(s)
-        return string.format(' %s%s  %d:%d  %s', s.path, s.dirty and ' +' or '',
+        return string.format(' %s%s  %d:%d  %s', (s.name or s.path), s.dirty and ' +' or '',
           s.line, s.column, s.message)
       end,
     },

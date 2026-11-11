@@ -6,13 +6,13 @@ from pathlib import Path
 import pty
 import re
 import select
-import signal
 import struct
 import subprocess
 import sys
 import tempfile
 import termios
 import time
+from daemon_support import DaemonRuntime, wait_ready
 
 repo = Path(__file__).resolve().parents[1]
 base = (repo / 'lua/presentation.lua').read_text()
@@ -30,7 +30,7 @@ end
 return p
 """
 
-with tempfile.TemporaryDirectory(prefix='junc-presentation-') as directory:
+with tempfile.TemporaryDirectory(prefix='junc-presentation-') as directory, DaemonRuntime() as daemon:
     root = Path(directory)
     (root / 'lua').mkdir()
     source = root / 'lua/presentation.lua'
@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='junc-presentation-') as directory:
     supervisor = "import pathlib, subprocess, sys, termios; r=subprocess.run([sys.argv[1], 'sample.txt']); pathlib.Path('restored.txt').write_text(repr(termios.tcgetattr(0))); sys.exit(r.returncode)"
     terminal_env = dict(os.environ, TERM='xterm-256color', COLORTERM='truecolor')
     terminal_env.pop('NO_COLOR', None)
-    process = subprocess.Popen([sys.executable, '-c', supervisor, str(repo / 'zig-out/bin/junc')], stdin=slave, stdout=slave, stderr=slave, cwd=root, preexec_fn=setup, env=terminal_env)
+    process = subprocess.Popen([sys.executable, '-c', supervisor, str(repo / 'zig-out/bin/junc')], stdin=slave, stdout=slave, stderr=slave, cwd=root, preexec_fn=setup, env=daemon.environment(terminal_env))
     output = bytearray()
     def drain(seconds=.3):
         until = time.monotonic() + seconds
@@ -76,8 +76,9 @@ with tempfile.TemporaryDirectory(prefix='junc-presentation-') as directory:
         return match.groups()
     try:
         drain(.6)
+        wait_ready(process, output, drain)
         # Exercise real libvaxis OSC report parsing; startup initially has no answers.
-        assert b'\x1b]10;?' in output and b'\x1b]11;?' in output and b'\x1b]4;4;?' in output
+        assert b'\x1b]10;?' in output and b'\x1b]11;?' in output and b'\x1b]4;4;?' in output, output
         send(b'\x1b]10;rgb:dddd/eeee/ffff\x1b\\\x1b]11;rgb:1111/2222/3333\x1b\\\x1b]4;4;rgb:4444/5555/6666\x1b\\')
         send(b'abc\x1b[1;2D')
         raw, clean = snapshot()

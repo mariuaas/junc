@@ -34,7 +34,11 @@ fn invokeCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
     const name = text(state, 1) catch |err| return fail(state, @errorName(err));
     const input = text(state, 2) catch |err| return fail(state, @errorName(err));
     const value = editor.invoke(name, input) catch |err| {
-        return fail(state, if (err == error.LuaError) editor.status() else @errorName(err));
+        const message = if (err == error.LuaError or err == error.ServerRejected)
+            editor.status()
+        else
+            @errorName(err);
+        return fail(state, message);
     };
     if (value) |owned| {
         var result = owned;
@@ -43,10 +47,26 @@ fn invokeCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
         lua.lua_createtable(state, 0, 3);
         push(state, @tagName(result));
         lua.lua_setfield(state, -2, "kind");
-        lua.lua_pushinteger(state, editor.document.revision);
+        const revision = switch (result) {
+            .edit_event => |event| event.new_revision,
+            .interaction_result => |event| event.document_revision,
+            .validation_report => unreachable, // Rejections returned above.
+        };
+        const interaction = switch (result) {
+            .edit_event => |event| event.interaction_revision,
+            .interaction_result => |event| event.new_revision,
+            .validation_report => unreachable,
+        };
+        const buffer = switch (result) {
+            .edit_event => |event| event.buffer_id,
+            .interaction_result => |event| event.buffer_id,
+            .validation_report => unreachable,
+        };
+        lua.lua_pushinteger(state, buffer);
+        lua.lua_setfield(state, -2, "buffer_id");
+        lua.lua_pushinteger(state, revision);
         lua.lua_setfield(state, -2, "revision");
-        lua.lua_pushinteger(state, editor.document.interactionRevision(editor.session) catch |err|
-            return fail(state, @errorName(err)));
+        lua.lua_pushinteger(state, interaction);
         lua.lua_setfield(state, -2, "interaction_revision");
     } else lua.lua_pushboolean(state, 1);
     return 1;
@@ -87,8 +107,9 @@ fn promptCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
 fn inputActionCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
     const state = maybe_state.?;
     const editor = host(state);
-    if (editor.runtime_depth == 0 or editor.minibuffer.context == null)
+    if (editor.runtime_depth == 0 or editor.minibuffer.context == null) {
         return fail(state, "Input actions require a focused minibuffer command");
+    }
     const name = text(state, 1) catch |err| return fail(state, @errorName(err));
     const action = std.meta.stringToEnum(minibuffer_input.Action, name) orelse
         return fail(state, "Unknown input action");
@@ -97,8 +118,10 @@ fn inputActionCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
     return 1;
 }
 
-/// Installs closures only on the active VM and at a stable host address, never on reload candidates.
+/// Installs closures only on the active VM and at a stable host address, never on reload
+/// candidates.
 pub fn bind(editor: *Editor) void {
+    @import("buffer_api.zig").bind(editor);
     const state = editor.state;
     const top = lua.lua_gettop(state);
     defer lua.lua_settop(state, top);
@@ -164,8 +187,9 @@ pub fn complete(editor: *Editor) !void {
     for (0..length) |index| {
         lua.lua_rawgeti(state, -1, @intCast(index + 1));
         const value = try text(state, -1);
-        if (!Minibuffer.printable(value) or !std.mem.startsWith(u8, value, prefix))
+        if (!Minibuffer.printable(value) or !std.mem.startsWith(u8, value, prefix)) {
             return error.InvalidCompletion;
+        }
         const owned = try editor.allocator.dupe(u8, value);
         mini.candidates.append(editor.allocator, owned) catch |err| {
             editor.allocator.free(owned);

@@ -32,14 +32,22 @@ function M.execute(name, c, text)
   local fn = M.commands[name]
   if type(fn)~='function' then error('Unknown or unavailable command: '..tostring(name)) end
   local intent = fn(c, text or '')
-  if intent then intent.source = name end
+  if intent then
+    intent.source = name
+    -- Preserve an explicitly captured origin; defaults refer to this command's observation.
+    if intent.origin==nil then intent.origin=c.revision end
+    if intent.interaction_origin==nil then intent.interaction_origin=c.interaction_revision end
+    if intent.buffer_id==nil then intent.buffer_id=c.buffer_id end
+  end
   return intent
 end
 function M.replace(c, text, first, last)
-  return {kind='replace', start=first or c.first, finish=last or c.last, text=text}
+  return {kind='replace', start=first or c.first, finish=last or c.last, text=text,
+    origin=c.revision, interaction_origin=c.interaction_revision, buffer_id=c.buffer_id}
 end
 function M.move(c, position, select)
-  return {kind='move', position=position, mark=select and (c.mark or c.cursor) or nil}
+  return {kind='move', position=position, mark=select and (c.mark or c.cursor) or nil,
+    origin=c.revision, interaction_origin=c.interaction_revision, buffer_id=c.buffer_id}
 end
 M.command('insert', function(c, text) return M.replace(c, text) end)
 M.command('backspace', function(c)
@@ -124,4 +132,50 @@ M.keymap('minibuffer', {
 })
 M.bind('ctrl-x ctrl-s', 'save')
 M.bind('ctrl-x ctrl-r', 'reload')
+local function buffer_candidates()
+  local entries={}
+  local current=M.state().buffer_id
+  for _, buffer in ipairs(M.buffers()) do
+    entries[#entries+1]=string.format('%d %s%s%s', buffer.id, buffer.name,
+      buffer.id==current and ' [current]' or '', buffer.dirty and ' *' or '')
+  end
+  return entries
+end
+local function switch_prompt(show)
+  M.prompt{label='Buffer: ',history='switch-buffer',complete=buffer_candidates,
+    submit=function(value)
+      local id=tonumber(value:match('^(%d+)'))
+      assert(id, 'Choose a buffer id from completion')
+      M.select_buffer(id)
+    end}
+  if show then M.input_action('complete') end
+end
+M.command('open-file', function()
+  M.prompt{label='Open file (empty for scratch): ',history='open-file',submit=M.open_file}
+end, {description='Open a file in the global registry, or create scratch input',category='buffer'})
+M.command('switch-buffer', function() switch_prompt(false) end,
+  {description='Select a global buffer with completion',category='buffer'})
+M.command('list-buffers', function() switch_prompt(true) end,
+  {description='Browse the global buffer registry; Enter selects',category='buffer'})
+M.command('kill-buffer', function(c)
+  for _, buffer in ipairs(M.buffers()) do
+    if buffer.id==c.buffer_id then
+      if buffer.dirty then
+        M.prompt{label='Discard '..buffer.name..'? type yes: ',history='kill-buffer',submit=function(value)
+          assert(value=='yes', 'Buffer retained; type yes to discard, or cancel')
+          M.kill_buffer(buffer.id,true)
+        end}
+      else M.kill_buffer(buffer.id) end
+      return
+    end
+  end
+  error('Buffer is no longer available')
+end, {description='Kill the current buffer; dirty contents require explicit confirmation',category='buffer'})
+M.command('save-as', function()
+  M.prompt{label='Save as: ',history='save-as',submit=function(path)
+    assert(#path>0,'A filename is required'); M.save_as(path)
+  end}
+end, {description='Save under a filename, preserving global path uniqueness',category='file'})
+M.command('shutdown-server', function() M.shutdown_server() end,
+  {description='Stop a clean server and detach; refuses dirty buffers',category='runtime'})
 return M

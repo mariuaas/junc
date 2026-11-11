@@ -12,7 +12,7 @@ fn input(editor: *junc.Editor, key: []const u8, text: []const u8) !void {
 }
 
 fn textIs(editor: *junc.Editor, expected: []const u8) !void {
-    const text = try editor.document.getText();
+    const text = try editor.document.?.getText();
     defer allocator.free(text);
     try std.testing.expectEqualStrings(expected, text);
 }
@@ -62,7 +62,7 @@ test "transient priority and recency precede context and global maps while docum
     try input(&editor, "ctrl-g", "");
     try input(&editor, "text", "j");
     try textIs(&editor, "ABACG");
-    try std.testing.expectEqual(@as(u32, 5), editor.document.revision);
+    try std.testing.expectEqual(@as(u32, 5), editor.document.?.revision);
     try evaluate(&editor, "editor.last_result.surface");
     try std.testing.expectEqualStrings("minibuffer", lastOutput(&editor));
     try input(&editor, "ctrl-g", "");
@@ -81,11 +81,11 @@ test "a winning layer owns its whole prefix and invalid continuation never inser
         \\end
     );
     try input(&editor, "end", "");
-    const revision = editor.document.revision;
-    const interaction = try editor.document.interactionRevision(editor.session);
+    const revision = editor.document.?.revision;
+    const interaction = try editor.document.?.interactionRevision(editor.session);
     try input(&editor, "text", "g");
     try std.testing.expect(std.mem.indexOf(u8, editor.status(), "g -> buffer-start") != null);
-    try std.testing.expectEqual(interaction, try editor.document.interactionRevision(editor.session));
+    try std.testing.expectEqual(interaction, try editor.document.?.interactionRevision(editor.session));
     try input(&editor, "text", "x");
     try std.testing.expect(std.mem.startsWith(u8, editor.status(), "Unbound sequence:"));
     try std.testing.expectEqual(@as(u32, 3), try editor.position());
@@ -98,7 +98,7 @@ test "a winning layer owns its whole prefix and invalid continuation never inser
     try input(&editor, "text", "g");
     try input(&editor, "ctrl-g", "");
     try std.testing.expectEqualStrings("Prefix cancelled", editor.status());
-    try std.testing.expectEqual(revision, editor.document.revision);
+    try std.testing.expectEqual(revision, editor.document.?.revision);
     try textIs(&editor, "abc");
     try input(&editor, "escape", "");
     try std.testing.expectEqualStrings("Popped navigation", editor.status());
@@ -145,7 +145,7 @@ test "overlapping or malformed map replacements are atomic including the pending
         \\assert(editor.keymap_info('nav').bindings[1].sequence=='g g'); return 'atomic'
     );
     try std.testing.expectEqualStrings("atomic", lastOutput(&editor));
-    try std.testing.expectEqual(@as(u32, 0), editor.document.revision);
+    try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
     try input(&editor, "ctrl-g", "");
     try input(&editor, "text", "g");
     try input(&editor, "text", "g");
@@ -165,7 +165,7 @@ test "document transient maps cannot intercept minibuffer keys and explicit mini
     try input(&editor, "shift-right", "");
     const position = try editor.position();
     const mark = try editor.mark();
-    const interaction = try editor.document.interactionRevision(editor.session);
+    const interaction = try editor.document.?.interactionRevision(editor.session);
     try input(&editor, "ctrl-l", "");
     try input(&editor, "text", "'j'");
     try input(&editor, "enter", "");
@@ -179,8 +179,8 @@ test "document transient maps cannot intercept minibuffer keys and explicit mini
     try std.testing.expect(editor.minibuffer.context == null);
     try std.testing.expectEqual(position, try editor.position());
     try std.testing.expectEqual(mark, try editor.mark());
-    try std.testing.expectEqual(interaction, try editor.document.interactionRevision(editor.session));
-    try std.testing.expectEqual(@as(u32, 0), editor.document.revision);
+    try std.testing.expectEqual(interaction, try editor.document.?.interactionRevision(editor.session));
+    try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
     try textIs(&editor, "main");
 }
 
@@ -192,11 +192,11 @@ test "focus and successful reload cancel pending prefixes while failed configura
     try editor.reload("return function(e) e.keymap('nav',{['g g']='buffer-start'}); e.push_keymap('nav') end");
     try input(&editor, "text", "g");
     const state = editor.state;
-    const revision = editor.document.revision;
-    const interaction = try editor.document.interactionRevision(editor.session);
+    const revision = editor.document.?.revision;
+    const interaction = try editor.document.?.interactionRevision(editor.session);
     const position = try editor.position();
     const mark = try editor.mark();
-    const undo = editor.document.undo_stack.items.len;
+    const undo = editor.document.?.undo_stack.items.len;
     try std.testing.expectError(error.LuaError, editor.reload("return function(e) e.keymap('bad',{g='left',['g g']='right'}) end"));
     try std.testing.expectEqual(state, editor.state);
     try std.testing.expectError(error.LuaError, editor.reloadSources(
@@ -214,17 +214,17 @@ test "focus and successful reload cancel pending prefixes while failed configura
     try editor.reload("return function(e) e.bind('x','buffer-end') end");
     try input(&editor, "text", "x");
     try std.testing.expectEqual(@as(u32, 3), try editor.position());
-    try std.testing.expectEqual(revision, editor.document.revision);
-    try std.testing.expectEqual(undo, editor.document.undo_stack.items.len);
+    try std.testing.expectEqual(revision, editor.document.?.revision);
+    try std.testing.expectEqual(undo, editor.document.?.undo_stack.items.len);
     // A successful reload itself must preserve every interaction field exactly.
     try input(&editor, "shift-left", "");
     const next_position = try editor.position();
     const next_mark = try editor.mark();
-    const next_interaction = try editor.document.interactionRevision(editor.session);
+    const next_interaction = try editor.document.?.interactionRevision(editor.session);
     try editor.reload(null);
     try std.testing.expectEqual(next_position, try editor.position());
     try std.testing.expectEqual(next_mark, try editor.mark());
-    try std.testing.expectEqual(next_interaction, try editor.document.interactionRevision(editor.session));
+    try std.testing.expectEqual(next_interaction, try editor.document.?.interactionRevision(editor.session));
     try std.testing.expectEqual(@as(u32, 2), position);
     try std.testing.expect(mark != null and interaction > 0);
     try input(&editor, "ctrl-z", "");
@@ -260,7 +260,7 @@ test "introspection reports active layers bindings shadowing and sorted pending 
         \\assert(editor.keymap_state().pending.continuations[1].key=='a'); return 'reflected'
     );
     try std.testing.expectEqualStrings("reflected", lastOutput(&editor));
-    try std.testing.expectEqual(@as(u32, 0), editor.document.revision);
+    try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
     try input(&editor, "ctrl-g", "");
     try input(&editor, "ctrl-o", "");
     try input(&editor, "text", "describe-keymap");
@@ -290,7 +290,7 @@ test "space Unicode and deep sequences use normalized events without splitting t
     try std.testing.expect(std.mem.startsWith(u8, editor.status(), "g g ..."));
     try input(&editor, "text", "g");
     try std.testing.expectEqual(@as(u32, 3), try editor.position());
-    try std.testing.expectEqual(@as(u32, 0), editor.document.revision);
+    try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
     try input(&editor, "text", "gg");
     try textIs(&editor, "abcgg");
 }

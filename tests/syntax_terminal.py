@@ -12,12 +12,13 @@ import sys
 import tempfile
 import termios
 import time
+from daemon_support import DaemonRuntime, wait_ready
 
 repo = Path(__file__).resolve().parents[1]
 base = (repo / 'lua/presentation.lua').read_text()
 
 def exercise(language):
-    with tempfile.TemporaryDirectory(prefix='junc-syntax-') as directory:
+    with tempfile.TemporaryDirectory(prefix='junc-syntax-') as directory, DaemonRuntime() as daemon:
         root = Path(directory)
         (root / 'lua').mkdir()
         (root / 'lua/presentation.lua').write_text(base)
@@ -34,7 +35,7 @@ def exercise(language):
         supervisor = "import pathlib,subprocess,sys,termios; r=subprocess.run(sys.argv[1:]); pathlib.Path('restored.txt').write_text(repr(termios.tcgetattr(0))); sys.exit(r.returncode)"
         environment = dict(os.environ, TERM='xterm-256color', COLORTERM='truecolor')
         environment.pop('NO_COLOR', None)
-        process = subprocess.Popen([sys.executable, '-c', supervisor, str(repo / 'zig-out/bin/junc'), path], stdin=slave, stdout=slave, stderr=slave, cwd=root, preexec_fn=setup, env=environment)
+        process = subprocess.Popen([sys.executable, '-c', supervisor, str(repo / 'zig-out/bin/junc'), path], stdin=slave, stdout=slave, stderr=slave, cwd=root, preexec_fn=setup, env=daemon.environment(environment))
         output = bytearray()
         def drain(seconds=.35):
             until = time.monotonic() + seconds
@@ -64,6 +65,7 @@ def exercise(language):
             return re.search(rb'[:;]'.join(str(channel).encode() for channel in rgb), raw)
         try:
             drain(.7)
+            wait_ready(process, output, drain)
             raw = snapshot()
             assert has_color(raw, (199, 146, 234)), raw
             initial = state(raw)

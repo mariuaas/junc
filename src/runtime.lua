@@ -5,6 +5,14 @@ return function(editor)
     return result
   end
   function editor.invoke(name, text) return checked(editor._invoke(name, text or '')) end
+  function editor.buffers() return checked(editor._buffers()) end
+  function editor.open_file(path) return checked(editor._open_file(path or '')) end
+  function editor.select_buffer(id) return checked(editor._select_buffer(id)) end
+  function editor.kill_buffer(id, discard)
+    return checked(editor._kill_buffer(id or editor.state().buffer_id, discard or false))
+  end
+  function editor.save_as(path) return checked(editor._save_as(path)) end
+  function editor.shutdown_server() return checked(editor._shutdown_server()) end
   function editor.input_action(action) return checked(editor._input_action(action)) end
   function editor.state() return checked(editor._state()) end
   function editor.output(text) return checked(editor._output(tostring(text))) end

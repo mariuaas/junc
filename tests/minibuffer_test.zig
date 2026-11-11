@@ -35,9 +35,9 @@ test "persistent Litura minibuffer edits Unicode and isolates main document sele
     try input(&editor, "shift-right", "");
     const position = try editor.position();
     const mark = try editor.mark();
-    const revision = editor.document.revision;
-    const interaction = try editor.document.interactionRevision(editor.session);
-    const undo_count = editor.document.undo_stack.items.len;
+    const revision = editor.document.?.revision;
+    const interaction = try editor.document.?.interactionRevision(editor.session);
+    const undo_count = editor.document.?.undo_stack.items.len;
     const session = editor.minibuffer.session;
     const cursor = editor.minibuffer.cursor;
     try input(&editor, "alt-colon", "");
@@ -57,12 +57,12 @@ test "persistent Litura minibuffer edits Unicode and isolates main document sele
     try input(&editor, "ctrl-l", "");
     try std.testing.expectEqual(session, editor.minibuffer.session);
     try std.testing.expectEqual(cursor, editor.minibuffer.cursor);
-    try std.testing.expectEqual(revision, editor.document.revision);
-    try std.testing.expectEqual(interaction, try editor.document.interactionRevision(editor.session));
+    try std.testing.expectEqual(revision, editor.document.?.revision);
+    try std.testing.expectEqual(interaction, try editor.document.?.interactionRevision(editor.session));
     try std.testing.expectEqual(position, try editor.position());
     try std.testing.expectEqual(mark, try editor.mark());
-    try std.testing.expectEqual(undo_count, editor.document.undo_stack.items.len);
-    try textIs(&editor.document, "Xmain");
+    try std.testing.expectEqual(undo_count, editor.document.?.undo_stack.items.len);
+    try textIs(editor.document.?, "Xmain");
 }
 
 test "command discovery completion and description reflect extension metadata and current bindings" {
@@ -80,10 +80,10 @@ test "command discovery completion and description reflect extension metadata an
     try input(&editor, "tab", "");
     try textIs(&editor.minibuffer.document, "stitch-example");
     try input(&editor, "enter", "");
-    try textIs(&editor.document, "stitched");
+    try textIs(editor.document.?, "stitched");
     try std.testing.expect(editor.minibuffer.context == null);
     try input(&editor, "ctrl-b", "");
-    try textIs(&editor.document, "stitchedstitched");
+    try textIs(editor.document.?, "stitchedstitched");
     try evaluate(&editor, "editor.command_info('stitch-example').description");
     try std.testing.expectEqualStrings("Stitch text", lastOutput(&editor));
     try input(&editor, "ctrl-g", "");
@@ -119,14 +119,14 @@ test "live Lua expressions statements errors registration binding and invocation
     try evaluate(&editor, "editor.command('live', function(c,t) return editor.replace(c,'LIVE') end); editor.bind('ctrl-b','live')");
     try evaluate(&editor, "editor.invoke('live').revision");
     try std.testing.expectEqualStrings("1", lastOutput(&editor));
-    try textIs(&editor.document, "LIVE");
+    try textIs(editor.document.?, "LIVE");
     try input(&editor, "ctrl-g", "");
     try input(&editor, "ctrl-b", "");
-    try textIs(&editor.document, "LIVELIVE");
+    try textIs(editor.document.?, "LIVELIVE");
     try evaluate(&editor, "editor.last_result.kind");
     // Input edits also have observable submission results in this same Lua environment.
     try std.testing.expectEqualStrings("edit_event", lastOutput(&editor));
-    try std.testing.expectEqual(@as(u32, 2), editor.document.revision);
+    try std.testing.expectEqual(@as(u32, 2), editor.document.?.revision);
 }
 
 test "completion ambiguity cycling and history namespaces preserve drafts across close and reopen" {
@@ -169,7 +169,7 @@ test "generic prompts supply completion and submit values through named commands
     try input(&editor, "tab", "");
     try textIs(&editor.minibuffer.document, "apple");
     try input(&editor, "enter", "");
-    try textIs(&editor.document, "apple");
+    try textIs(editor.document.?, "apple");
     try std.testing.expect(editor.minibuffer.context == null);
 }
 
@@ -199,7 +199,7 @@ test "VM reload preserves both input sessions and native histories while replaci
     try std.testing.expect(editor.minibuffer.context == null);
     try std.testing.expect(editor.minibuffer.history.items.len > 0);
     try std.testing.expect(editor.minibuffer.output.items.len <= junc.Minibuffer.output_count_max);
-    try std.testing.expectEqual(@as(u32, 0), editor.document.revision);
+    try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
 }
 
 test "prompt callback errors retain input and failed reload retains prompt callbacks" {
@@ -217,7 +217,7 @@ test "prompt callback errors retain input and failed reload retains prompt callb
     try input(&editor, "enter", "");
     try std.testing.expect(editor.minibuffer.context == null);
     try std.testing.expectEqualStrings("okay", lastOutput(&editor));
-    try std.testing.expectEqual(@as(u32, 0), editor.document.revision);
+    try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
 }
 
 test "minibuffer Unicode cells share clipping selection and cursor precedence at every terminal size" {
@@ -229,13 +229,18 @@ test "minibuffer Unicode cells share clipping selection and cursor precedence at
     try editor.openMinibuffer(.lua);
     try input(&editor, "text", "界é");
     try input(&editor, "shift-left", "");
-    const revision = editor.document.revision;
-    const interaction = try editor.document.interactionRevision(editor.session);
+    const revision = editor.document.?.revision;
+    const interaction = try editor.document.?.interactionRevision(editor.session);
     var surface: Surface = .{};
     defer surface.deinit(allocator);
     for ([_]u16{ 24, 8, 1 }) |columns| {
         const height: u16 = if (columns == 1) 1 else 6;
-        var screen = try vaxis.Screen.init(allocator, .{ .rows = height, .cols = columns, .x_pixel = 0, .y_pixel = 0 });
+        var screen = try vaxis.Screen.init(allocator, .{
+            .rows = height,
+            .cols = columns,
+            .x_pixel = 0,
+            .y_pixel = 0,
+        });
         defer screen.deinit(allocator);
         const win: vaxis.Window = .{
             .screen = &screen,
@@ -254,16 +259,18 @@ test "minibuffer Unicode cells share clipping selection and cursor precedence at
             try std.testing.expectEqual(@as(u8, 2), wide.char.width);
             const cursor = win.readCell(7, row).?;
             try std.testing.expectEqualStrings("é", cursor.char.grapheme);
-            try std.testing.expect(vaxis.Color.eql(cursor.style.bg, .{ .rgb = editor.presentation.theme.cursor_bg.rgb }));
+            try std.testing.expect(vaxis.Color.eql(cursor.style.bg, .{
+                .rgb = editor.presentation.theme.cursor_bg.rgb,
+            }));
         } else {
             // A one-cell viewport clips the wide grapheme while keeping the active cursor visible.
             const x: u16 = if (columns == 1) 0 else 7;
             try std.testing.expectEqualStrings("é", win.readCell(x, row).?.char.grapheme);
         }
     }
-    try std.testing.expectEqual(revision, editor.document.revision);
-    try std.testing.expectEqual(interaction, try editor.document.interactionRevision(editor.session));
-    try textIs(&editor.document, "main");
+    try std.testing.expectEqual(revision, editor.document.?.revision);
+    try std.testing.expectEqual(interaction, try editor.document.?.interactionRevision(editor.session));
+    try textIs(editor.document.?, "main");
 }
 
 test "reload requested by a live result observer waits for its Lua stack to return" {
@@ -274,9 +281,9 @@ test "reload requested by a live result observer waits for its Lua stack to retu
     try input(&editor, "text", "safe");
     try std.testing.expectEqual(@as(usize, 0), editor.runtime_depth);
     try std.testing.expect(!editor.reload_requested);
-    try textIs(&editor.document, "safe");
+    try textIs(editor.document.?, "safe");
     try input(&editor, "ctrl-z", "");
-    try textIs(&editor.document, "");
+    try textIs(editor.document.?, "");
 }
 
 test "invalid minibuffer presentation colors reject the complete replacement without losing live input" {
@@ -310,5 +317,23 @@ test "output is bounded sanitized and visible when a command returns focus" {
     try input(&editor, "ctrl-g", "");
     _ = try editor.invoke("speak", "");
     try std.testing.expectEqualStrings("spoken", editor.status());
-    try std.testing.expectEqual(@as(u32, 0), editor.document.revision);
+    try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
+}
+
+test "Lua helpers preserve captured origins and reject an old snapshot instead of relabelling coordinates" {
+    var editor = try junc.Editor.init(allocator, "abc", null);
+    defer editor.deinit();
+    try evaluate(&editor, "captured=editor.state(); editor.command('stale',function() return editor.replace(captured,'BAD') end); editor.bind('ctrl-b','stale')");
+    try input(&editor, "ctrl-g", "");
+    try input(&editor, "text", "X");
+    const revision = editor.document.?.revision;
+    const interaction = try editor.document.?.interactionRevision(editor.session);
+    try std.testing.expectError(error.StaleRevision, editor.dispatch("ctrl-b", ""));
+    try textIs(editor.document.?, "Xabc");
+    try std.testing.expectEqual(revision, editor.document.?.revision);
+    try std.testing.expectEqual(interaction, try editor.document.?.interactionRevision(editor.session));
+    try evaluate(&editor, "editor.command('wrong-buffer',function(c) c.buffer_id=99; return editor.move(c,0) end); editor.bind('ctrl-b','wrong-buffer')");
+    try input(&editor, "ctrl-g", "");
+    try std.testing.expectError(error.BufferChanged, editor.dispatch("ctrl-b", ""));
+    try textIs(editor.document.?, "Xabc");
 }

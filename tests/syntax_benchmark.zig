@@ -25,7 +25,13 @@ pub fn main(init: std.process.Init) !void {
             } } });
             defer result.deinit(init.gpa);
             const edited = try query(init.io, &document);
-            std.debug.print("{s} {d} bytes: first {d} us, cached {d} us, edited {d} us\n", .{ language, text.len, first, cached, edited });
+            std.debug.print("{s} {d} bytes: first {d} us, cached {d} us, edited {d} us\n", .{
+                language,
+                text.len,
+                first,
+                cached,
+                edited,
+            });
         }
     }
 }

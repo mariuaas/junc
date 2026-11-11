@@ -15,11 +15,22 @@ fn command(editor: *junc.Editor, key: []const u8, text: []const u8) !void {
 }
 
 fn update(editor: *junc.Editor) !void {
-    try editor.syntax.update(&editor.document, .{ .start = 0, .end = editor.document.graphemeCount() });
+    try editor.syntax.update(editor.document.?, .{
+        .start = 0,
+        .end = editor.document.?.graphemeCount(),
+    });
 }
 
 fn window(screen: *vaxis.Screen) vaxis.Window {
-    return .{ .screen = screen, .x_off = 0, .y_off = 0, .parent_x_off = 0, .parent_y_off = 0, .width = screen.width, .height = screen.height };
+    return .{
+        .screen = screen,
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = screen.width,
+        .height = screen.height,
+    };
 }
 
 test "explicit language registry attaches Litura token providers for Zig Lua and Fennel" {
@@ -37,20 +48,20 @@ test "explicit language registry attaches Litura token providers for Zig Lua and
     for (samples) |sample| {
         var editor = try junc.Editor.init(allocator, sample[1], sample[0]);
         defer editor.deinit();
-        try std.testing.expect(editor.document.hasViewProvider("tokens"));
-        try std.testing.expect(!editor.document.hasViewProvider("syntax"));
-        try std.testing.expectEqual(junc.litura.views.ViewStateKind.stale, editor.document.queryViewState("tokens").kind);
+        try std.testing.expect(editor.document.?.hasViewProvider("tokens"));
+        try std.testing.expect(!editor.document.?.hasViewProvider("syntax"));
+        try std.testing.expectEqual(junc.litura.views.ViewStateKind.stale, editor.document.?.queryViewState("tokens").kind);
         try update(&editor);
         try std.testing.expect(editor.syntax.spans.len > 0);
         var found_string = false;
         for (editor.syntax.spans) |span| {
             if (span.category != .string) continue;
-            const text = try editor.document.getTextRange(span.start, span.end);
+            const text = try editor.document.?.getTextRange(span.start, span.end);
             defer allocator.free(text);
             if (std.mem.indexOf(u8, text, "界é") != null) found_string = true;
         }
         try std.testing.expect(found_string);
-        try std.testing.expectEqual(@as(u32, 0), editor.document.revision);
+        try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
     }
 }
 
@@ -63,7 +74,10 @@ test "visible token cache refreshes after edit undo redo but not scrolling or co
     const refreshes = editor.syntax.refresh_count;
     try update(&editor);
     try std.testing.expectEqual(@as(usize, 1), editor.syntax.query_count);
-    try editor.syntax.update(&editor.document, .{ .start = 12, .end = editor.document.graphemeCount() });
+    try editor.syntax.update(editor.document.?, .{
+        .start = 12,
+        .end = editor.document.?.graphemeCount(),
+    });
     try std.testing.expectEqual(refreshes, editor.syntax.refresh_count);
     try command(&editor, "text", "-- ");
     try update(&editor);
@@ -75,8 +89,8 @@ test "visible token cache refreshes after edit undo redo but not scrolling or co
     try update(&editor);
     try std.testing.expectEqual(junc.syntax.Category.comment, editor.syntax.categoryAt(0).?);
     try std.testing.expectEqual(refreshes + 3, editor.syntax.refresh_count);
-    const revision = editor.document.revision;
-    const interaction = try editor.document.interactionRevision(editor.session);
+    const revision = editor.document.?.revision;
+    const interaction = try editor.document.?.interactionRevision(editor.session);
     const queries = editor.syntax.query_count;
     const source = try std.mem.concat(allocator, u8, &.{
         "local p=(function()\n",                                                         junc.presentation.default_source,
@@ -88,8 +102,8 @@ test "visible token cache refreshes after edit undo redo but not scrolling or co
     try std.testing.expectEqual([3]u8{ 1, 2, 3 }, editor.presentation.syntax[keyword_index].fg.?.rgb);
     try std.testing.expectEqual(queries, editor.syntax.query_count);
     try std.testing.expectEqual(refreshes + 3, editor.syntax.refresh_count);
-    try std.testing.expectEqual(revision, editor.document.revision);
-    try std.testing.expectEqual(interaction, try editor.document.interactionRevision(editor.session));
+    try std.testing.expectEqual(revision, editor.document.?.revision);
+    try std.testing.expectEqual(interaction, try editor.document.?.interactionRevision(editor.session));
     const before = editor.presentation;
     const bad = try std.mem.concat(allocator, u8, &.{
         "local p=(function()\n",                                                    junc.presentation.default_source,
@@ -104,7 +118,7 @@ test "unknown languages missing providers and configured size fallback remain ed
     var unknown = try junc.Editor.init(allocator, "text", "notes.txt");
     defer unknown.deinit();
     try update(&unknown);
-    try std.testing.expect(!unknown.document.hasViewProvider("tokens"));
+    try std.testing.expect(!unknown.document.?.hasViewProvider("tokens"));
     var document = try junc.litura.BufferEngine.initFromText(allocator, "local x=1", null);
     defer document.deinit();
     var cache = junc.Syntax.init(allocator, "sample.lua");
@@ -129,7 +143,12 @@ test "Unicode tokens map to cells through grapheme positions with horizontal cli
     defer editor.deinit();
     try editor.setPreset("minimal");
     try command(&editor, "end", "");
-    var screen = try vaxis.Screen.init(allocator, .{ .rows = 3, .cols = 24, .x_pixel = 0, .y_pixel = 0 });
+    var screen = try vaxis.Screen.init(allocator, .{
+        .rows = 3,
+        .cols = 24,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
     defer screen.deinit(allocator);
     const win = window(&screen);
     var surface: Surface = .{};

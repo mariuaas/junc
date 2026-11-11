@@ -12,9 +12,10 @@ import sys
 import tempfile
 import termios
 import time
+from daemon_support import DaemonRuntime, wait_ready
 
 binary = Path(__file__).resolve().parents[1] / 'zig-out/bin/junc'
-with tempfile.TemporaryDirectory(prefix='junc-terminal-') as directory:
+with tempfile.TemporaryDirectory(prefix='junc-terminal-') as directory, DaemonRuntime() as daemon:
     root = Path(directory)
     (root / 'lua').mkdir()
     (root / 'lua/extension.lua').write_text("return function(e) e.command('wrap', function(c) return e.replace(c, '['..c.selection..']') end) end")
@@ -25,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='junc-terminal-') as directory:
         os.setsid()
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
     supervisor = "import pathlib, subprocess, sys, termios; result=subprocess.run([sys.argv[1], 'sample.txt']); pathlib.Path('restored.txt').write_text(repr(termios.tcgetattr(0))); sys.exit(result.returncode)"
-    process = subprocess.Popen([sys.executable, '-c', supervisor, str(binary)], stdin=slave, stdout=slave, stderr=slave, cwd=root, preexec_fn=setup)
+    process = subprocess.Popen([sys.executable, '-c', supervisor, str(binary)], stdin=slave, stdout=slave, stderr=slave, cwd=root, preexec_fn=setup, env=daemon.environment())
     output = bytearray()
     def drain(seconds=.3):
         until = time.monotonic() + seconds
@@ -40,6 +41,7 @@ with tempfile.TemporaryDirectory(prefix='junc-terminal-') as directory:
         drain()
     try:
         drain(.6)
+        wait_ready(process, output, drain)
         assert process.poll() is None
         assert b'\x1b[?1049h' in output
         send(b'e')
@@ -71,8 +73,7 @@ with tempfile.TemporaryDirectory(prefix='junc-terminal-') as directory:
         assert (root / 'sample.txt').read_text().endswith('scroll 29'), repr((root / 'sample.txt').read_text())
         send(b'x' * 100)
         send(b'\x11')
-        assert not (root / 'restored.txt').exists(), 'unsaved quit did not require repetition'
-        send(b'\x11')
+        # Quit detaches immediately; the private daemon retains these unsaved bytes.
         process.wait(timeout=5)
         drain(.1)
         assert process.returncode == 0

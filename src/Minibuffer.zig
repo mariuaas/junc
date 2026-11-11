@@ -1,4 +1,5 @@
-//! Owns one persistent Litura input document/session, bounded history/output and completion strings.
+//! Owns one persistent Litura input document/session, bounded history/output and completion
+//! strings.
 const std = @import("std");
 const litura = @import("litura");
 const editing = @import("editing.zig");
@@ -53,7 +54,13 @@ pub fn deinit(self: *Minibuffer) void {
 }
 
 pub fn target(self: *Minibuffer) editing.Target {
-    return .{ .document = &self.document, .cursor = self.cursor, .session = self.session };
+    return .{
+        .local = .{
+            .document = &self.document,
+            .cursor = self.cursor,
+            .session = self.session,
+        },
+    };
 }
 
 pub fn prompt(self: *const Minibuffer) []const u8 {
@@ -66,37 +73,29 @@ pub fn historyNamespace(self: *const Minibuffer) []const u8 {
 
 /// Replaces input through Litura's revision-aware public submission path; no direct anchor writes.
 pub fn setText(self: *Minibuffer, text: []const u8) !void {
-    if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
-    var result = try self.document.submit(.{
+    var result = try self.target().submit(self.allocator, .{
+        .kind = .replace,
         .origin = self.document.revision,
+        .interaction_origin = try self.document.interactionRevision(self.session),
         .source = "minibuffer",
-        .cause = "input-replacement",
-        .payload = .{ .composite = .{ .parts = &.{
-            .{ .buffer_mutation = .{ .ops = &.{.{ .replace = .{
-                .start = 0,
-                .end = self.document.graphemeCount(),
-                .text = text,
-            } }} } },
-            .{ .interaction_mutation = .{
-                .session_id = self.session,
-                .origin = try self.document.interactionRevision(self.session),
-                .ops = &.{
-                    .{ .move_cursor_anchor = .{
-                        .cursor = self.cursor,
-                        .position = @intCast(litura.segmentation.graphemeCount(text)),
-                    } },
-                    .{ .set_cursor_selection = .{ .cursor = self.cursor, .mark_position = null } },
-                },
-            } },
-        } } },
+        .start = 0,
+        .finish = self.document.graphemeCount(),
+        .text = text,
     });
     defer result.deinit(self.allocator);
     if (result == .validation_report) return error.InvalidInput;
 }
 
-pub fn open(self: *Minibuffer, context: Context, label: []const u8, namespace: []const u8, initial: []const u8) !void {
-    if (label.len >= self.label.len or namespace.len == 0 or namespace.len >= self.namespace.len)
+pub fn open(
+    self: *Minibuffer,
+    context: Context,
+    label: []const u8,
+    namespace: []const u8,
+    initial: []const u8,
+) !void {
+    if (label.len >= self.label.len or namespace.len == 0 or namespace.len >= self.namespace.len) {
         return error.InvalidPrompt;
+    }
     if (!printable(label) or !printable(namespace)) return error.InvalidPrompt;
     try self.setText(initial);
     self.cancel();

@@ -34,7 +34,10 @@ pub const Terminal = struct {
 };
 
 pub const Viewport = struct { width: u32 = 80, height: u32 = 24, top: u32 = 0, left: u32 = 0 };
+/// Borrowed observation strings remain valid through resolve/validate; Lua receives copied strings.
 pub const Context = struct {
+    buffer_id: u32,
+    name: []const u8,
     path: []const u8,
     message: []const u8,
     dirty: bool,
@@ -86,6 +89,7 @@ pub const MinibufferStyle = struct {
     output_fg: ?Color = null,
 };
 
+/// Self-contained presentation values, safe to retain after Lua VM replacement.
 pub const Frame = struct {
     theme: Theme,
     minibuffer: MinibufferStyle = .{},
@@ -132,8 +136,9 @@ fn boolean(state: *lua.lua_State, name: [:0]const u8) !bool {
 fn colorAt(state: *lua.lua_State) !Color {
     if (lua.lua_type(state, -1) == lua.LUA_TNUMBER) {
         const value = lua.lua_tonumber(state, -1);
-        if (!std.math.isFinite(value) or value < 0 or value > 255 or @floor(value) != value)
+        if (!std.math.isFinite(value) or value < 0 or value > 255 or @floor(value) != value) {
             return error.InvalidPresentation;
+        }
         return .{ .index = @intFromFloat(value) };
     }
     const text = try textAt(state, -1);
@@ -143,7 +148,8 @@ fn colorAt(state: *lua.lua_State) !Color {
     var rgb: [3]u8 = undefined;
     for (&rgb, 0..) |*channel, index| {
         const offset = 1 + index * 2;
-        channel.* = std.fmt.parseInt(u8, text[offset .. offset + 2], 16) catch return error.InvalidPresentation;
+        channel.* = std.fmt.parseInt(u8, text[offset .. offset + 2], 16) catch
+            return error.InvalidPresentation;
     }
     return .{ .rgb = rgb };
 }
@@ -153,8 +159,13 @@ fn pushColor(state: *lua.lua_State, color: Color) void {
         .default => pushString(state, "default"),
         .index => |index| lua.lua_pushinteger(state, index),
         .rgb => |rgb| {
+            // Three u8 channels produce exactly six hex digits plus '#'.
             var bytes: [7]u8 = undefined;
-            const text = std.fmt.bufPrint(&bytes, "#{x:0>2}{x:0>2}{x:0>2}", .{ rgb[0], rgb[1], rgb[2] }) catch unreachable;
+            const text = std.fmt.bufPrint(&bytes, "#{x:0>2}{x:0>2}{x:0>2}", .{
+                rgb[0],
+                rgb[1],
+                rgb[2],
+            }) catch unreachable;
             pushString(state, text);
         },
     }
@@ -250,7 +261,9 @@ fn syntaxPalette(state: *lua.lua_State) ![syntax.category_count]SyntaxStyle {
             const key = try textAt(state, -2);
             if (!std.mem.eql(u8, key, "fg") and !std.mem.eql(u8, key, "bold") and
                 !std.mem.eql(u8, key, "italic") and !std.mem.eql(u8, key, "underline"))
+            {
                 return error.InvalidPresentation;
+            }
             pop(state);
         }
         palette[@intFromEnum(category)] = token_style;

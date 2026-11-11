@@ -8,10 +8,13 @@ top: u32 = 0,
 left: u32 = 0,
 monochrome: bool = false,
 mini_left: u32 = 0,
+buffer_id: ?u32 = null,
+redraw_requested: bool = false,
 auxiliary: [2][1024]u8 = @splat(@splat(0)),
 // libvaxis cells borrow strings until render completes, so row labels live on the surface.
 gutter_bytes: std.ArrayListUnmanaged([12]u8) = .empty,
 
+/// Releases row-label storage using the allocator supplied to draw; no terminal is owned here.
 pub fn deinit(self: *Surface, allocator: std.mem.Allocator) void {
     self.gutter_bytes.deinit(allocator);
     self.* = undefined;
@@ -35,8 +38,24 @@ fn width(win: vaxis.Window, cluster: []const u8, column: u32) u32 {
     return @max(1, win.gwidth(cluster));
 }
 
+/// Draws one frame, allocating row labels and resolving Lua policy before cell construction.
+/// May query one authoritative view; cells borrow this surface/editor until libvaxis render
+/// completes.
 pub fn draw(self: *Surface, editor: *junc.Editor, win: vaxis.Window) !void {
-    editor.present(.{ .width = win.width, .height = win.height, .top = self.top, .left = self.left }) catch |err| {
+    const target = editor.mainTarget();
+    if (self.buffer_id != null and self.buffer_id != target.bufferId()) {
+        self.top = editor.viewport.top;
+        self.left = editor.viewport.left;
+    }
+    self.buffer_id = target.bufferId();
+    self.redraw_requested = false;
+    const queried_rows = try self.prepareView(editor, win);
+    editor.present(.{
+        .width = win.width,
+        .height = win.height,
+        .top = self.top,
+        .left = self.left,
+    }) catch |err| {
         editor.report(@errorName(err));
     };
     const frame = &editor.presentation;
@@ -48,7 +67,7 @@ pub fn draw(self: *Surface, editor: *junc.Editor, win: vaxis.Window) !void {
     const status_rows: u16 = @intFromBool(frame.status_visible and win.height > mini_rows);
     const rows = win.height - status_rows - mini_rows;
     var digits: u16 = 1;
-    var count = editor.document.lineCount();
+    var count = target.lineCount();
     while (count >= 10) : (count /= 10) digits += 1;
     const gutter: u16 = if (frame.gutter_visible)
         @min(if (frame.line_numbers) digits + 1 else 1, win.width -| 1)
@@ -56,11 +75,15 @@ pub fn draw(self: *Surface, editor: *junc.Editor, win: vaxis.Window) !void {
         0;
     const columns = win.width - gutter;
     const position = try editor.position();
-    const lc = try editor.document.positionToLineCol(position);
-    if (lc.line < self.top) self.top = lc.line;
-    if (lc.line >= self.top + rows) self.top = lc.line -| (rows -| 1);
+    const lc = try target.positionToLineCol(position);
+    if (target == .local) {
+        if (lc.line < self.top) self.top = lc.line;
+        if (lc.line >= self.top + rows) self.top = lc.line -| (rows -| 1);
+    }
+    if (queried_rows) |queried| self.redraw_requested = queried != @max(rows, 1);
     var cursor_column: u32 = 0;
-    var cursor = try editor.document.graphemeCursor(try editor.document.lineStart(lc.line));
+    if (target == .local) try target.prepareLines(self.top, @max(rows, 1));
+    var cursor = try target.graphemeCursor(try target.lineStart(lc.line));
     while (cursor.position < position) {
         cursor_column += width(win, try cursor.current(), cursor_column);
         if (!cursor.advance()) break;
@@ -68,44 +91,34 @@ pub fn draw(self: *Surface, editor: *junc.Editor, win: vaxis.Window) !void {
     if (cursor_column < self.left) self.left = cursor_column;
     if (cursor_column >= self.left + columns) self.left = cursor_column - columns + 1;
     if (editor.viewport.top != self.top or editor.viewport.left != self.left) {
-        editor.present(.{ .width = win.width, .height = win.height, .top = self.top, .left = self.left }) catch |err| {
+        editor.present(.{
+            .width = win.width,
+            .height = win.height,
+            .top = self.top,
+            .left = self.left,
+        }) catch |err| {
             editor.report(@errorName(err));
         };
     }
-    if (rows > 0 and self.top < editor.document.lineCount()) {
-        const last_line = @min(self.top + rows, editor.document.lineCount()) - 1;
-        editor.syntax.update(&editor.document, .{
-            .start = try editor.document.lineStart(self.top),
-            .end = try editor.document.lineEnd(last_line, true),
+    if (rows > 0 and self.top < target.lineCount()) {
+        const last_line = @min(self.top + rows, target.observedLineEnd()) - 1;
+        target.updateSyntax(&editor.syntax, .{
+            .start = try target.lineStart(self.top),
+            .end = try target.lineEnd(last_line, true),
         }) catch |err| editor.report(@errorName(err));
     }
     const mark = try editor.mark();
-    const first = @min(position, mark orelse position);
-    const last = @max(position, mark orelse position);
-    try self.gutter_bytes.resize(editor.allocator, rows);
-    var row: u16 = 0;
-    while (row < rows) : (row += 1) {
-        const line = self.top + row;
-        const gutter_style = style(theme.gutter_fg, theme.gutter_bg);
-        for (0..gutter) |x| win.writeCell(@intCast(x), row, .{ .style = gutter_style });
-        if (line >= editor.document.lineCount()) continue;
-        if (gutter > 0 and frame.line_numbers) {
-            const label = try std.fmt.bufPrint(&self.gutter_bytes.items[row], "{d}", .{line + 1});
-            const number_win = win.child(.{ .x_off = 0, .y_off = row, .width = gutter - 1, .height = 1 });
-            _ = number_win.printSegment(.{ .text = label, .style = gutter_style }, .{ .wrap = .none });
-        }
-        try self.drawLine(editor.mainTarget(), frame, &editor.syntax, win, .{
-            .line = line,
-            .row = row,
-            .gutter = gutter,
-            .first = first,
-            .last = last,
-            .cursor = if (editor.minibuffer.context == null) position else null,
-            .left = self.left,
-        });
-    }
+    try self.drawRows(editor, win, .{
+        .rows = rows,
+        .gutter = gutter,
+        .position = position,
+        .mark = mark,
+        .gutter_style = style(theme.gutter_fg, theme.gutter_bg),
+    });
     // The software cursor uses ordinary themed cells, avoiding terminal-global OSC 12 writes.
-    if (rows > 0 and editor.minibuffer.context == null) {
+    if (rows > 0 and editor.minibuffer.context == null and
+        lc.line >= self.top and lc.line - self.top < rows)
+    {
         const x: u16 = @intCast(cursor_column - self.left + gutter);
         const y: u16 = @intCast(lc.line - self.top);
         var cell = win.readCell(x, y) orelse vaxis.Cell{};
@@ -117,11 +130,77 @@ pub fn draw(self: *Surface, editor: *junc.Editor, win: vaxis.Window) !void {
     if (status_rows > 0) {
         const status_win = win.child(.{ .y_off = rows, .height = 1 });
         status_win.fill(.{ .style = style(theme.status_fg, theme.status_bg) });
-        _ = status_win.printSegment(.{ .text = frame.status(), .style = style(theme.status_fg, theme.status_bg) }, .{ .wrap = .none });
+        _ = status_win.printSegment(.{
+            .text = frame.status(),
+            .style = style(theme.status_fg, theme.status_bg),
+        }, .{
+            .wrap = .none,
+        });
     }
     if (mini_rows > 0) try self.drawMinibuffer(editor, win, win.height - mini_rows, mini_rows);
     editor.viewport.top = self.top;
     editor.viewport.left = self.left;
+}
+
+// Acquire one immutable range after retiring the cells that borrowed its predecessor.
+fn prepareView(self: *Surface, editor: *junc.Editor, win: vaxis.Window) !?u16 {
+    const target = editor.mainTarget();
+    if (target == .remote and win.width > 0 and win.height > 0) {
+        // Retire borrowed view strings only after the current cell buffer is cleared.
+        win.fill(.{});
+        const mini: u16 = if (editor.minibuffer.context != null) @min(3, win.height) else 0;
+        const status: u16 = @intFromBool(editor.presentation.status_visible and win.height > mini);
+        const query_rows = @max(1, win.height - mini - status);
+        try target.prepareLines(self.top, query_rows);
+        self.top = target.remote.client.view_frame.?.value.view.?.first_line;
+        return query_rows;
+    }
+    return null;
+}
+
+fn drawRows(self: *Surface, editor: *junc.Editor, win: vaxis.Window, options: struct {
+    rows: u16,
+    gutter: u16,
+    position: u32,
+    mark: ?u32,
+    gutter_style: vaxis.Style,
+}) !void {
+    const target = editor.mainTarget();
+    const frame = &editor.presentation;
+    const first = @min(options.position, options.mark orelse options.position);
+    const last = @max(options.position, options.mark orelse options.position);
+    try self.gutter_bytes.resize(editor.allocator, options.rows);
+    var row: u16 = 0;
+    while (row < options.rows) : (row += 1) {
+        const line = self.top + row;
+        const gutter_style = options.gutter_style;
+        for (0..options.gutter) |x| win.writeCell(@intCast(x), row, .{ .style = gutter_style });
+        if (line >= target.lineCount() or line >= target.observedLineEnd()) continue;
+        if (options.gutter > 0 and frame.line_numbers) {
+            const label = try std.fmt.bufPrint(&self.gutter_bytes.items[row], "{d}", .{line + 1});
+            const number_win = win.child(.{
+                .x_off = 0,
+                .y_off = row,
+                .width = options.gutter - 1,
+                .height = 1,
+            });
+            _ = number_win.printSegment(.{
+                .text = label,
+                .style = gutter_style,
+            }, .{
+                .wrap = .none,
+            });
+        }
+        try self.drawLine(editor.mainTarget(), frame, &editor.syntax, win, .{
+            .line = line,
+            .row = row,
+            .gutter = options.gutter,
+            .first = first,
+            .last = last,
+            .cursor = if (editor.minibuffer.context == null) options.position else null,
+            .left = self.left,
+        });
+    }
 }
 
 const Row = struct {
@@ -134,11 +213,18 @@ const Row = struct {
     left: u32,
 };
 
-fn drawLine(self: *Surface, target: Target, frame: *const junc.presentation.Frame, syntax: ?*const junc.Syntax, win: vaxis.Window, row: Row) !void {
+fn drawLine(
+    self: *Surface,
+    target: Target,
+    frame: *const junc.presentation.Frame,
+    syntax: ?*const junc.Syntax,
+    win: vaxis.Window,
+    row: Row,
+) !void {
     const theme = frame.theme;
-    const start = try target.document.lineStart(row.line);
-    const end = try target.document.lineEnd(row.line, false);
-    var iterator = try target.document.graphemeCursor(start);
+    const start = try target.lineStart(row.line);
+    const end = try target.lineEnd(row.line, false);
+    var iterator = try target.graphemeCursor(start);
     var column: u32 = 0;
     const columns = win.width - row.gutter;
     while (iterator.position < end) {
@@ -163,10 +249,19 @@ fn drawLine(self: *Surface, target: Target, frame: *const junc.presentation.Fram
         if (column >= row.left and column + cells <= row.left + columns) {
             const x: u16 = @intCast(column - row.left + row.gutter);
             if (std.mem.eql(u8, cluster, "\t")) {
-                for (0..cells) |offset| win.writeCell(x + @as(u16, @intCast(offset)), row.row, .{ .style = cell_style });
+                for (0..cells) |offset| win.writeCell(x + @as(u16, @intCast(offset)), row.row, .{
+                    .style = cell_style,
+                });
             } else {
-                const safe = if (cluster.len == 1 and (cluster[0] < 32 or cluster[0] == 127)) "�" else cluster;
-                win.writeCell(x, row.row, .{ .char = .{ .grapheme = safe, .width = @intCast(cells) }, .style = cell_style });
+                const control = cluster.len == 1 and (cluster[0] < 32 or cluster[0] == 127);
+                const safe = if (control) "�" else cluster;
+                win.writeCell(x, row.row, .{
+                    .char = .{
+                        .grapheme = safe,
+                        .width = @intCast(cells),
+                    },
+                    .style = cell_style,
+                });
             }
         }
         column += cells;
@@ -176,7 +271,13 @@ fn drawLine(self: *Surface, target: Target, frame: *const junc.presentation.Fram
 }
 
 // Uses the same grapheme-to-cell renderer as document rows, with a clipped prompt prefix.
-fn drawMinibuffer(self: *Surface, editor: *junc.Editor, win: vaxis.Window, row: u16, rows: u16) !void {
+fn drawMinibuffer(
+    self: *Surface,
+    editor: *junc.Editor,
+    win: vaxis.Window,
+    row: u16,
+    rows: u16,
+) !void {
     const mini = &editor.minibuffer;
     var frame = editor.presentation;
     const appearance = frame.minibuffer;
@@ -189,12 +290,17 @@ fn drawMinibuffer(self: *Surface, editor: *junc.Editor, win: vaxis.Window, row: 
     while (prompt_clusters.next()) |cluster| prompt_width += width(win, cluster, prompt_width);
     const prefix: u16 = @intCast(@min(prompt_width, win.width -| 1));
     const prompt_win = input_win.child(.{ .width = prefix, .height = 1 });
-    _ = prompt_win.printSegment(.{ .text = mini.prompt(), .style = style(appearance.prompt_fg orelse frame.theme.gutter_fg, frame.theme.bg) }, .{ .wrap = .none });
+    _ = prompt_win.printSegment(.{
+        .text = mini.prompt(),
+        .style = style(appearance.prompt_fg orelse frame.theme.gutter_fg, frame.theme.bg),
+    }, .{
+        .wrap = .none,
+    });
     const target = mini.target();
     const position = try target.position();
-    const lc = try target.document.positionToLineCol(position);
+    const lc = try target.positionToLineCol(position);
     var cursor_column: u32 = 0;
-    var cursor = try target.document.graphemeCursor(try target.document.lineStart(lc.line));
+    var cursor = try target.graphemeCursor(try target.lineStart(lc.line));
     while (cursor.position < position) {
         cursor_column += width(win, try cursor.current(), cursor_column);
         if (!cursor.advance()) break;
@@ -234,6 +340,11 @@ fn drawMinibuffer(self: *Surface, editor: *junc.Editor, win: vaxis.Window, row: 
             break :output mini.output.items[count - visible + index - 1];
         };
         const line = input_win.child(.{ .y_off = index, .height = 1 });
-        _ = line.printSegment(.{ .text = label, .style = style(appearance.output_fg orelse frame.theme.gutter_fg, frame.theme.bg) }, .{ .wrap = .none });
+        _ = line.printSegment(.{
+            .text = label,
+            .style = style(appearance.output_fg orelse frame.theme.gutter_fg, frame.theme.bg),
+        }, .{
+            .wrap = .none,
+        });
     }
 }

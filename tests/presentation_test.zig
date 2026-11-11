@@ -4,7 +4,13 @@ const junc = @import("junc");
 const allocator = std.testing.allocator;
 
 fn policy(edits: []const u8) ![]u8 {
-    return std.mem.concat(allocator, u8, &.{ "local p = (function()\n", junc.presentation.default_source, "\nend)()\n", edits, "\nreturn p" });
+    return std.mem.concat(allocator, u8, &.{
+        "local p = (function()\n",
+        junc.presentation.default_source,
+        "\nend)()\n",
+        edits,
+        "\nreturn p",
+    });
 }
 
 fn command(editor: *junc.Editor, key: []const u8, text: []const u8) !void {
@@ -33,8 +39,8 @@ test "presets and terminal-derived colors are Lua policy with safe unanswered-qu
     try std.testing.expectEqualStrings("minimal", editor.preset.slice());
     try std.testing.expect(!editor.presentation.gutter_visible);
     try std.testing.expectEqual([3]u8{ 24, 34, 30 }, editor.presentation.theme.bg.rgb);
-    try std.testing.expectEqual(@as(u32, 0), editor.document.revision);
-    try std.testing.expectEqual(@as(u32, 0), try editor.document.interactionRevision(editor.session));
+    try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
+    try std.testing.expectEqual(@as(u32, 0), try editor.document.?.interactionRevision(editor.session));
 }
 
 test "successful presentation and command reload preserves document selection session viewport and history" {
@@ -47,10 +53,10 @@ test "successful presentation and command reload preserves document selection se
     const cursor = editor.cursor;
     const position = try editor.position();
     const mark = try editor.mark();
-    const interaction = try editor.document.interactionRevision(session);
+    const interaction = try editor.document.?.interactionRevision(session);
     const viewport = editor.viewport;
-    const revision = editor.document.revision;
-    const history = editor.document.undo_stack.items.len;
+    const revision = editor.document.?.revision;
+    const history = editor.document.?.undo_stack.items.len;
     try editor.setPreset("minimal");
     const source = try policy("p.presets.minimal.status = function(s) return 'LIVE '..s.path..' r'..s.revision..' i'..s.interaction_revision end; p.presets.minimal.theme = p.presets.classic.theme");
     defer allocator.free(source);
@@ -61,16 +67,16 @@ test "successful presentation and command reload preserves document selection se
     try std.testing.expectEqual(cursor, editor.cursor);
     try std.testing.expectEqual(position, try editor.position());
     try std.testing.expectEqual(mark, try editor.mark());
-    try std.testing.expectEqual(interaction, try editor.document.interactionRevision(session));
-    try std.testing.expectEqual(revision, editor.document.revision);
+    try std.testing.expectEqual(interaction, try editor.document.?.interactionRevision(session));
+    try std.testing.expectEqual(revision, editor.document.?.revision);
     try std.testing.expectEqualDeep(viewport, editor.viewport);
-    try std.testing.expectEqual(history, editor.document.undo_stack.items.len);
-    const text = try editor.document.getText();
+    try std.testing.expectEqual(history, editor.document.?.undo_stack.items.len);
+    const text = try editor.document.?.getText();
     defer allocator.free(text);
     try std.testing.expectEqualStrings("abc", text);
     try command(&editor, "text", "z");
     try command(&editor, "ctrl-z", "");
-    const restored = try editor.document.getText();
+    const restored = try editor.document.?.getText();
     defer allocator.free(restored);
     try std.testing.expectEqualStrings("abc", restored);
 }
@@ -99,11 +105,11 @@ test "invalid Lua or presentation retains previous VM frame and command implemen
         try std.testing.expectError(error.InvalidPresentation, editor.reloadSources("return function(e) e.command('insert', function(c,t) return e.replace(c, 'X') end) end", source));
         try std.testing.expectEqual(state, editor.state);
         try std.testing.expectEqualDeep(before, editor.presentation);
-        try std.testing.expectEqual(@as(u32, 0), editor.document.revision);
-        try std.testing.expectEqual(@as(u32, 0), try editor.document.interactionRevision(editor.session));
+        try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
+        try std.testing.expectEqual(@as(u32, 0), try editor.document.?.interactionRevision(editor.session));
     }
     try command(&editor, "text", "a");
-    const text = try editor.document.getText();
+    const text = try editor.document.?.getText();
     defer allocator.free(text);
     try std.testing.expectEqualStrings("a", text);
     try std.testing.expectError(error.InvalidPresentation, editor.setPreset("missing"));
@@ -118,7 +124,10 @@ test "a later status callback failure leaves the last complete presentation fram
     try editor.reloadSources(null, source);
     const frame = editor.presentation;
     try command(&editor, "text", "a");
-    try std.testing.expectError(error.InvalidPresentation, editor.present(.{ .width = 40, .height = 10 }));
+    try std.testing.expectError(error.InvalidPresentation, editor.present(.{
+        .width = 40,
+        .height = 10,
+    }));
     try std.testing.expectEqualDeep(frame, editor.presentation);
-    try std.testing.expectEqual(@as(u32, 1), editor.document.revision);
+    try std.testing.expectEqual(@as(u32, 1), editor.document.?.revision);
 }

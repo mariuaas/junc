@@ -1,10 +1,10 @@
 # Syntax highlighting
 
-junc enables the existing Litura Tree-sitter package option by default. The explicit extension registry maps `.zig` to Zig, `.lua` to Lua and `.fnl` to Fennel. Unknown extensions and scratch documents remain plain text. No parser or segmentation implementation is copied into junc.
+junc highlights `.zig`, `.lua` and `.fnl` files through Litura’s Tree-sitter providers, enabled by default. Unknown extensions and scratch documents remain plain text. Litura supplies grapheme-based token spans; the server caches the visible range and the client applies the Lua palette while rendering terminal cells.
 
 ## Litura API and coordinates
 
-The integration uses `tree_sitter.TreeSitterTokenProvider.attachTokensBuiltin(document, language)` to attach only the token facade. It does not attach the separate syntax-node facade, which junc does not need. Litura owns the provider and releases it when the document is destroyed. Attachment creates parser/query resources but does not parse the document.
+The integration calls `tree_sitter.TreeSitterTokenProvider.attachTokensBuiltin(document, language)` to attach the token facade. The separate syntax-node facade is unused. Litura owns the provider and releases it when the document is destroyed. Attachment creates parser/query resources but does not parse the document.
 
 `queryViewState("tokens")` reports availability and revision. `queryTokenSpans(start, end, document.revision)` rejects a non-head revision and returns an owning array allocated by the document allocator. Each `TokenSpan` has half-open `start`/`end`, original capture `kind` (such as `keyword.function` or `string.escape`), and normalized `style` (such as `syntax:keyword`). The nested strings belong to the provider; junc copies only positions and normalized category enums into its own cache.
 
@@ -37,7 +37,7 @@ The nine supported keys map exactly to Litura's normalized styles:
 | `operator` | `syntax:operator`; operator |
 | `punctuation` | `syntax:punctuation`; punctuation subcategories |
 
-Foreground colors use the existing `"default"`, palette index or `"#RRGGBB"` representation. `bold`, `italic` and `underline` are optional booleans. Unspecified categories inherit base text; an omitted foreground retains the base foreground. Unknown categories/attributes and invalid values reject the replacement presentation, including errors in inactive presets. Classic provides a moderately expressive palette; Minimal uses fewer colors and mostly inherits base text.
+Foreground colors use the existing `"default"`, palette index or `"#RRGGBB"` representation. `bold`, `italic` and `underline` are optional booleans. Unspecified categories inherit base text; an omitted foreground retains the base foreground. Unknown categories/attributes and invalid values reject the replacement presentation, including errors in inactive presets. Classic assigns colors to more token groups; Minimal uses fewer colors and mostly inherits base text.
 
 Precedence is base text → syntax → selection → cursor. Selection and cursor completely replace token styling, including attributes. The existing NO_COLOR behavior still suppresses colors while retaining useful attributes and inverse selection/cursor cells.
 
@@ -45,11 +45,11 @@ Style tables are validated and copied into a fixed native array during presentat
 
 ## Refresh, caching and limits
 
-At pinned Litura revision `bea86d0df696939eaef75ce84dd8087e15fe958d`, edits (including undo/redo) mark the provider stale. The first `queryTokenSpans` on a stale revision synchronously copies the full document, calls `parseString(text, null)`, builds a full grapheme map and runs all highlight queries. It does not reuse the old parse tree incrementally. Later visible queries scan the cached full-document spans and return intersecting entries. Thus a narrow viewport bounds returned spans, not the cost of a stale refresh or the scan over cached captures.
+At pinned Litura revision `4864521859c7106f89326d9936c3d0a17dff1e35`, edits (including undo/redo) mark the provider stale. The first `queryTokenSpans` on a stale revision synchronously copies the full document, calls `parseString(text, null)`, builds a full grapheme map and runs all highlight queries. It does not reuse the old parse tree incrementally. Later visible queries scan the cached full-document spans and return intersecting entries. A narrow viewport therefore reduces the returned spans, but the stale refresh still processes the full document and later queries still scan its cached captures.
 
 junc caches the normalized visible spans by document revision and row range. Repainting, cursor movement within the same rows, horizontal scrolling, and palette reload reuse that cache. Vertical scrolling or resize may query a new range, but do not rebuild the provider at the same revision. A failed refresh drops stale colors and is retried only after the document revision changes; editing remains available. Absent or unavailable providers fall back to base text.
 
-`zig build bench-syntax` measures the unmodified provider's initial refresh, a repeated 200-grapheme query, and a refresh after an edit. One synthetic run on this macOS arm64 machine, with repeated short source lines containing CJK and combining text, gave:
+`zig build bench-syntax` measures the unmodified provider's initial refresh, a repeated 200-grapheme query, and a refresh after an edit. A recorded synthetic run with the earlier `bea86d0` pin on macOS arm64 used repeated short source lines containing CJK and combining text:
 
 | Source size | ReleaseSafe refresh, Zig/Lua/Fennel | Debug refresh, Zig/Lua/Fennel |
 | --- | --- | --- |
@@ -63,8 +63,10 @@ Because every edited revision incurs synchronous work, junc defaults to plain te
 
 ## Remaining library boundaries
 
-No Litura or Substrate code is modified. The full-refresh and linear cached-query costs are measured limitations for a separate provider-performance workload. Litura also resolves overlapping captures itself, keeping sorted non-overlapping spans; junc uses that result rather than applying independent capture priority rules. Raw capture subcategories are available in `kind` but this first presentation API intentionally styles the normalized groups only. Existing Litura transaction/allocation-failure limitations remain as documented in its known-issues file.
+The integration uses the published Litura package without modifying it. Reducing the full-refresh and linear cached-query costs requires provider work. Litura also resolves overlapping captures itself, keeping sorted non-overlapping spans; junc uses that result rather than applying independent capture priority rules. Raw capture subcategories are available in `kind`; the presentation API styles only the normalized groups. Existing Litura transaction/allocation-failure limitations remain as documented in its known-issues file.
 
 ## Verification
 
 `zig build test` exercises all three providers, grapheme-coordinate string spans, refresh after editing/undo/redo, cache reuse after scrolling and palette reload, missing/unavailable providers, size fallback, native Unicode cells and horizontal clipping, and selection/cursor precedence. The parser-disabled test build verifies plain-text editing. `tests/syntax_terminal.py` opens copies of junc's own Zig and Lua code, edits and scrolls, changes presets, edits a syntax color in the open Lua presentation file, saves/reloads it without changing revisions, rejects a bad palette and verifies resize and terminal restoration. The existing editing and presentation PTY suites remain applicable.
+
+With [server hosting](daemon.md), providers and their refresh cache live beside each authoritative server document. Visible text, grapheme byte boundaries and token spans arrive together in a revision-stamped view. The client caches immutable spans for the existing cell renderer; it does not attach a parser or segment main-document text locally.

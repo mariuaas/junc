@@ -4,7 +4,8 @@ const runtime = @import("runtime.zig");
 
 pub const Action = enum { cancel, complete, previous, next, submit };
 
-/// Performs an input action selected by Lua's focused context map. Editing stays in the shared bridge.
+/// Performs an input action selected by Lua's focused context map. Editing stays in the shared
+/// bridge.
 pub fn perform(editor: *Editor, action: Action) !void {
     const mini = &editor.minibuffer;
     switch (action) {

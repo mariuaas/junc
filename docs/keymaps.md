@@ -1,6 +1,6 @@
 # Layered keymaps
 
-Keymaps are Lua policy that selects commands from the live registry. Commands still run through the same Litura submission adapter. A map never owns a document, cursor or interaction session.
+A temporary navigation map should be able to override document keys without intercepting a prompt. Junc resolves Lua keymaps separately for the document and minibuffer, then invokes commands from the same live registry. The maps select commands; document and interaction state remain in Litura.
 
 For a small live demonstration, open M-: and evaluate this statement:
 
@@ -10,7 +10,7 @@ editor.keymap('navigation', {
 }, {priority=10}); editor.push_keymap('navigation')
 ```
 
-Cancel the REPL with Ctrl-G. Now j/k navigate, g g moves to the beginning, and Escape deactivates navigation. Typing returns immediately to ordinary insertion. The document map remains active while you open M-x or M-:, but cannot intercept minibuffer input. Use M-x `describe-keymaps` to see active layers, or M-x `describe-keymap`, then complete `navigation`, to inspect its bindings. Redefine `navigation` with another `editor.keymap` call to change its bindings immediately while it remains active. No rebuild or reload is needed. To persist definitions and activations, put them inside the initializer returned by `lua/extension.lua`, then press Ctrl-R.
+Cancel the REPL with Ctrl-G. Now j/k navigate, g g moves to the beginning, and Escape deactivates navigation. After Escape, ordinary typing inserts text again. The document map remains active while you open M-x or M-:, but cannot intercept minibuffer input. Use M-x `describe-keymaps` to see active layers, or M-x `describe-keymap`, then complete `navigation`, to inspect its bindings. Redefine `navigation` with another `editor.keymap` call to change its bindings immediately while it remains active. To keep the definitions and activations across reloads, put them inside the initializer returned by `lua/extension.lua`, then press Ctrl-R.
 
 ## Resolution and precedence
 
@@ -21,13 +21,13 @@ The focused surface determines which layers participate. There are currently two
 3. `global`, where `editor.bind` installs bindings.
 4. Ordinary text insertion, if no layer recognized the event.
 
-The tiers are fixed: a context map's numeric priority never puts it above a transient map. Numeric priority orders transient maps. A push can override the map's priority for that activation.
+Numeric priority orders transient maps within the first tier; it cannot move a context map above a transient. A push can override the map’s priority for that activation.
 
 **The first layer that recognizes the first key owns the entire sequence.** A direct binding in a higher layer shadows a lower layer's whole prefix. A higher prefix also shadows lower direct bindings and lower prefixes, including their otherwise unique continuations. There is no merging of prefix branches or fallback midway through a sequence. This makes shadowing independent of which continuation happens to arrive.
 
 Within one map, a key sequence cannot be both a command and a prefix. Defining `g` and `g g` together is an error, in either insertion order. The entire map replacement is compiled into a trie before publication; rejected definitions preserve the previous map, activations and pending sequence. `editor.bind` obeys the same rule for the global map. To replace a prefix with a direct global command, first remove its child bindings with `editor.bind(sequence, nil)`.
 
-A prefix waits without a timeout and shows sorted immediate continuations in the status message, for example `g ... [navigation] g -> buffer-start`. Both shipped presentations include that message; custom status functions should include `state.message` to display hints and errors. Escape or Ctrl-G cancels a pending sequence and consumes the cancellation key. An invalid continuation cancels and consumes the whole sequence. Neither case executes a lower binding or inserts the continuation as text. A fresh key event then starts normal resolution. Thus Escape during `g ...` cancels first; another Escape can execute navigation's `keymap.pop`.
+A prefix waits without a timeout and shows sorted immediate continuations in the status message, for example `g ... [navigation] g -> buffer-start`. Both shipped presentations include that message; custom status functions should include `state.message` to display hints and errors. Escape or Ctrl-G cancels a pending sequence and consumes the cancellation key. An invalid continuation cancels and consumes the whole sequence. Neither case executes a lower binding or inserts the continuation as text. A fresh key event then starts normal resolution. For example, Escape during `g ...` cancels the prefix; a second Escape can execute navigation’s `keymap.pop`.
 
 Focus changes cancel pending sequences. They retain transient activations, so returning from input resumes the document's layers. Defining a map, changing a context map, or pushing/popping a map also cancels the pending sequence. An unavailable command reports an error and consumes the binding; it never falls back to insertion.
 
@@ -75,8 +75,8 @@ editor.command_info('buffer-start')      -- Includes map-qualified command bindi
 
 Zig normalizes libvaxis events and supplies a snapshot for the focused Litura target. Lua resolves the trie and invokes the existing command registry. Zig applies returned text/history/interaction intents, measures cells and renders. The minibuffer's submission, cancellation, completion and history choices are bindings in its Lua context map. Their commands call the native `editor.input_action(action)` facade (`submit`, `cancel`, `complete`, `previous`, `next`); Zig retains ownership of input documents, completion strings and history. These actions require a focused minibuffer and explicit command evaluation. Ordinary editing commands use the same bridge on either surface. Save and quit through ordinary minibuffer key dispatch remain unavailable; explicit REPL `editor.invoke` calls continue to target the main document.
 
-Ctrl-R stages the entire replacement VM, including maps, commands and presentation. Invalid definitions or unresolved command targets reject the replacement and retain the previous VM, maps, activations and pending prefix. A successful reload activates the candidate's configured layers and clears pending input sequences. Temporary REPL map definitions and pushes are lost, just like temporary commands and globals. The two Litura documents, sessions, selections, revisions, undo histories and native minibuffer histories remain alive. As before, a generic prompt cancels when its VM-owned callback is replaced.
+Ctrl-R stages the entire replacement VM, including maps, commands and presentation. Invalid definitions or unresolved command targets reject the replacement and retain the previous VM, maps, activations and pending prefix. A successful reload activates the candidate's configured layers and clears pending input sequences. Temporary REPL map definitions and pushes are lost, just like temporary commands and globals. Hosted buffers and their Litura sessions, selections, revisions and undo histories remain alive, along with the client-local minibuffer and its native history. A generic prompt cancels when its VM-owned callback is replaced.
 
-There are no modes, repeat counts, prefix arguments, key-sequence timeouts or inherited Emacs/Vim semantics. The mechanism supplies map composition and command selection; Lua can build more involved interactions later.
+The resolver supplies map composition and command selection. Modes, repeat counts, prefix arguments and key-sequence timeouts would need additional Lua policy; Emacs/Vim semantics are not implied by the binding names.
 
 `zig build test` covers priority, recency, context fallback, direct/prefix shadowing, deep prefixes, invalid and cancelled sequences, copied introspection, Unicode, unavailable commands and atomic replacement/reload. `python3 tests/keymap_terminal.py` demonstrates the navigation map through the live REPL, M-x inspection, which-key feedback, resize, Unicode and Meta events, reload, undo and terminal restoration.

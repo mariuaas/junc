@@ -1,6 +1,6 @@
 # Minibuffer and live Lua
 
-M-x opens command input. M-: opens Lua input. Meta means Alt when the terminal sends an Alt modifier, or Escape followed promptly by x or colon. Ctrl-O and Ctrl-L are the corresponding fallbacks when a terminal or multiplexer intercepts Meta. All bindings use normalized libvaxis events.
+M-x runs a named command; M-: evaluates Lua in the running editor. Both use the minibuffer, a separate input document at the bottom of the terminal, so editing a prompt leaves the file untouched. Meta means Alt when the terminal sends that modifier, or Escape followed promptly by x or colon. If your terminal or multiplexer intercepts Meta, use Ctrl-O for commands and Ctrl-L for Lua. All bindings use normalized libvaxis events.
 
 | Key while input is focused | Action |
 | --- | --- |
@@ -16,9 +16,9 @@ M-x opens command input. M-: opens Lua input. Meta means Alt when the terminal s
 
 The [Lua minibuffer context map](keymaps.md) defines input bindings. Document transient maps do not participate in its resolution; minibuffer transients require an explicit context option.
 
-Typing and ordinary editing commands target the focused input document, never the underlying file. Save, quit and presentation shell intents are unavailable through ordinary input key dispatch; cancel input first to use their document bindings. Explicit Lua `editor.invoke` calls target the main document. Opening either built-in context starts with empty input; history and the underlying input document/session survive closing it.
+Typing and ordinary editing commands target the focused input document, never the underlying file. Save, quit and presentation shell intents are unavailable through ordinary input key dispatch; cancel input first to use their document bindings. Explicit Lua `editor.invoke` calls target the selected main document. Opening either built-in context starts with empty input; history and the underlying input document/session survive closing it.
 
-The bottom region has one editable row and up to two completion or output rows. For multiline input it displays the cursor's current line. Layout, Unicode widths, selection, clipping and the software cursor use the same renderer as the main document. Very small terminals prioritize the editable row. The minibuffer uses the active theme and optional [minibuffer colors](presentation.md).
+The bottom region has one editable row and up to two completion or output rows. For multiline input it displays the cursor's current line. Layout, Unicode widths, selection, clipping and the software cursor use the same renderer as the selected main document. Very small terminals prioritize the editable row. The minibuffer uses the active theme and optional [minibuffer colors](presentation.md).
 
 ## Commands
 
@@ -37,7 +37,7 @@ editor.bind('ctrl-b', 'stamp')
 
 ## Live Lua
 
-M-: evaluates in the **currently active LuaJIT VM**. It first tries Lua's expression parser, then its statement parser. Multiple return values, including nil, are displayed; statements with no results show `(no values)`. Tables get a small readable preview. `print` writes to the bounded output history. Parser errors and runtime errors appear there without ending the session. Lua is trusted user code with standard libraries and FFI: evaluation can have filesystem, process or editor side effects, and it can block the editor. This is not a sandbox.
+M-: evaluates in the active LuaJIT VM, so a command or binding you define is immediately available to the editor. It first tries Lua's expression parser, then its statement parser. Multiple return values, including nil, are displayed; statements with no results show `(no values)`. Tables get a small readable preview. `print` writes to the bounded output history. Parser errors and runtime errors appear there without ending the session. Lua has the standard libraries and FFI. Evaluation can affect files, processes and editor state, and it can block the editor; use it as trusted code.
 
 Try each line separately:
 
@@ -70,8 +70,8 @@ History lives in Zig, with 50 entries shared across namespaces; entries over 64 
 
 ## Reload and ownership
 
-Ctrl-R retains the existing whole-VM transaction. The replacement registry, extension and presentation must load and validate before activation. A rejected reload retains the active VM, temporary definitions, callbacks and input. A successful reload discards temporary globals, commands, bindings, transient map activations and Lua prompt callbacks, replacing them with the candidate configuration. It cancels pending key sequences. Command and Lua contexts keep their input, cursor and selection; a generic prompt is cancelled because its callback belongs to the retired VM. Both Litura documents, sessions, revisions, selections, undo histories, native history and output stay alive. Reload requested from Lua is deferred until the active command, REPL or observer callback returns, so it never destroys an executing VM.
+Ctrl-R builds a replacement Lua VM and activates it only after the registry, extension and presentation load and validate. A rejected reload retains the active VM, temporary definitions, callbacks and input. A successful reload discards temporary globals, commands, bindings, transient map activations and Lua prompt callbacks, replacing them with the candidate configuration. It cancels pending key sequences. Command and Lua contexts keep their input, cursor and selection; a generic prompt is cancelled because its callback belongs to the retired VM. The hosted Litura buffers, their sessions, revisions, selections and undo histories stay alive, along with the local minibuffer, native history and output. Reload requested from Lua is deferred until the active command, REPL or observer callback returns, so it never destroys an executing VM.
 
-The minibuffer owns a separate persistent Litura document and interaction session. Shared editing primitives and `BufferEngine.submit` handle its text, selections and cursor. Native history and completion replacements also use revision-aware submission, without moving anchors directly. Command snapshots and result observers include `surface`, either `document` or `minibuffer`, so observers can distinguish their revision domains. Opening, editing and cancelling input do not change main-document revisions or undo history. Presentation callbacks cannot invoke the native editing bridge; explicit command evaluation is required. These are application mechanisms, not a claim of complete protocol reflection or a new Litura protocol.
+The client minibuffer owns a separate persistent Litura document and interaction session; main documents and their sessions live in the [local server](daemon.md). Shared editing primitives and `BufferEngine.submit` handle its text, selections and cursor. Native history and completion replacements also use revision-aware submission, without moving anchors directly. Command snapshots and result observers include `surface`, either `document` or `minibuffer`, so observers can distinguish their revision domains. Opening, editing and cancelling input do not change main-document revisions or undo history. Presentation callbacks cannot invoke the native editing bridge; explicit command evaluation is required. The [Lua API](lua-api.md) describes which submissions the observer sees and which parts of Litura’s reflection contract remain unsupported.
 
 `zig build test` checks editing isolation, Unicode cells, registry discovery, invocation, Lua evaluation, errors, history, generic prompts and reload lifetime. `python3 tests/minibuffer_terminal.py` exercises real Meta input and fallbacks, completion, live definitions and bindings, Lua errors, resize down to one cell, failed and successful reload, undo and terminal restoration.

@@ -67,7 +67,9 @@ pub fn attach(self: *Syntax, document: *litura.BufferEngine) !void {
     }
 }
 
-/// Queries one contiguous bounding range for visible rows, once per revision/range.
+/// Queries one contiguous grapheme range for visible rows, once per revision/range.
+/// Allocates normalized spans; a stale provider can allocate and parse the entire document
+/// synchronously.
 /// A stale query rebuilds the entire provider; same-revision queries and palette changes do not.
 /// Failure clears stale styling and is not retried until the document revision changes.
 pub fn update(self: *Syntax, document: *litura.BufferEngine, range: litura.types.Range) !void {
@@ -91,7 +93,10 @@ pub fn update(self: *Syntax, document: *litura.BufferEngine, range: litura.types
         return;
     }
     if (self.revision == document.revision and self.start == range.start and
-        self.end == range.end and (view.kind == .available or view.kind == .partial)) return;
+        self.end == range.end and (view.kind == .available or view.kind == .partial))
+    {
+        return;
+    }
     self.clear();
     self.failed_revision = document.revision;
     self.state = .unavailable;
@@ -110,7 +115,11 @@ pub fn update(self: *Syntax, document: *litura.BufferEngine, range: litura.types
     errdefer spans.deinit(self.allocator);
     for (tokens) |token| {
         const category = Category.fromStyle(token.style) orelse continue;
-        spans.appendAssumeCapacity(.{ .start = token.start, .end = token.end, .category = category });
+        spans.appendAssumeCapacity(.{
+            .start = token.start,
+            .end = token.end,
+            .category = category,
+        });
     }
     self.spans = try spans.toOwnedSlice(self.allocator);
     self.revision = document.revision;
