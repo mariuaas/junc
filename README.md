@@ -30,7 +30,7 @@ zig build -Doptimize=ReleaseSafe
 
 You'll need Zig **0.16.0**, `make` and a native C compiler. The build fetches its dependencies and builds LuaJIT for you. Tested on macOS arm64; cross compilation isn't supported. Run `junc` without a filename for a scratch buffer.
 
-Arrow keys move, Shift selects, typing edits. The document map is Emacs for motion: C-f / C-b, C-n / C-p, C-a / C-e, M-< / M->.
+Arrow keys move, Shift selects, typing edits. The document map is Emacs for motion: C-f / C-b, C-n / C-p, C-a / C-e, C-v / M-v, M-< / M->. Page Up / Page Down scroll a screenful too.
 
 | Key | Action |
 | --- | --- |

@@ -441,6 +441,18 @@ pub fn prepareView(self: *Connection, first_line: u32, line_count: u16) !void {
     self.view_invalidated = self.needs_refresh;
 }
 
+/// Grapheme offset of column on line, clamped to that line's content. Observes that one line and
+/// replaces the prepared view.
+pub fn linePosition(self: *Connection, line: u32, column: u32) !u32 {
+    const lines = self.current().lines;
+    if (lines == 0) return 0;
+    const number = @min(line, lines - 1);
+    try self.prepareView(number, 1);
+    const observed = self.view() orelse return error.ViewNotPrepared;
+    const row = observed.lines[0];
+    return @min(row.start + column, row.end);
+}
+
 /// Borrows the prepared view while it observes the current buffer and revision; null otherwise.
 /// Strings stay valid until the next successful prepareView or deinit.
 pub fn view(self: *const Connection) ?*const protocol.View {

@@ -104,6 +104,20 @@ fn promptCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
     return 1;
 }
 
+fn scrollCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
+    const state = maybe_state.?;
+    const editor = host(state);
+    if (editor.runtime_depth == 0) return fail(state, "Viewport changes require explicit user evaluation");
+    if (lua.lua_type(state, 1) != lua.LUA_TNUMBER) return fail(state, "ExpectedLine");
+    const value = lua.lua_tonumber(state, 1);
+    if (!std.math.isFinite(value) or value < 0 or value > std.math.maxInt(u32) or @floor(value) != value) {
+        return fail(state, "ExpectedLine");
+    }
+    editor.scroll(@intFromFloat(value));
+    lua.lua_pushboolean(state, 1);
+    return 1;
+}
+
 fn inputActionCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
     const state = maybe_state.?;
     const editor = host(state);
@@ -129,7 +143,7 @@ pub fn bind(editor: *Editor) void {
     const entries = .{
         .{ "_invoke", invokeCallback },            .{ "_state", snapshotCallback },
         .{ "_output", outputCallback },            .{ "_prompt", promptCallback },
-        .{ "_input_action", inputActionCallback },
+        .{ "_input_action", inputActionCallback }, .{ "_scroll", scrollCallback },
     };
     inline for (entries) |entry| {
         lua.lua_pushlightuserdata(state, editor);

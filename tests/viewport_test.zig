@@ -84,3 +84,30 @@ test "drawing scrolls the observed range to follow the cursor in both directions
     try std.testing.expectEqual(@as(u32, 2), editor.viewport.top);
     try std.testing.expect(!surface.redraw_requested);
 }
+
+test "page-down and page-up scroll a screenful and keep the cursor in the window" {
+    var text: std.ArrayListUnmanaged(u8) = .empty;
+    defer text.deinit(allocator);
+    for (0..40) |index| try text.print(allocator, "line {d}\n", .{index});
+    const fixture = try Fixture.create(allocator, text.items, null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
+    editor.viewport.height = 6;
+    try command(editor, "ctrl-v", "");
+    try std.testing.expectEqual(@as(u32, 4), editor.connection.current().line);
+    try std.testing.expectEqual(@as(u32, 4), editor.viewport.top);
+    try command(editor, "page-down", "");
+    try std.testing.expectEqual(@as(u32, 8), editor.connection.current().line);
+    try std.testing.expectEqual(@as(u32, 8), editor.viewport.top);
+    try command(editor, "alt-v", "");
+    try std.testing.expectEqual(@as(u32, 4), editor.connection.current().line);
+    try std.testing.expectEqual(@as(u32, 4), editor.viewport.top);
+    try command(editor, "page-up", "");
+    try std.testing.expectEqual(@as(u32, 0), editor.connection.current().line);
+    try std.testing.expectEqual(@as(u32, 0), editor.viewport.top);
+    try repeat(editor, "ctrl-v", 20);
+    const rows: u32 = 5;
+    const max_top = editor.connection.current().lines - rows;
+    try std.testing.expectEqual(max_top, editor.viewport.top);
+    try std.testing.expect(editor.connection.current().line >= editor.viewport.top);
+}

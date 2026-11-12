@@ -53,7 +53,7 @@ Bindings map canonical, space-separated event names to registered command names.
 
 Forward command references are allowed during definition, and whole-VM loading validates every map's command targets before activation. A live REPL binding to an unavailable command remains inspectable with `available=false` and reports an error on use. `editor.validate_keymaps()` can check those references explicitly. Binding tables and option tables must be plain tables; malformed sequences, values, priorities and unknown options are rejected before replacement.
 
-The document context map is `emacs`: C-f/C-b, C-n/C-p, C-a/C-e, C-d, C-g, M-</M->, and the matching Ctrl-Shift selection chords. The minibuffer map uses the same motion keys, with M-p/M-n for history alongside Up/Down. Global still holds arrows, C-x C-s (save), C-x C-r (reload), C-x C-p (next presentation) and C-x h (select all). `buffer-start`, `buffer-end`, `keymap.pop`, `describe-keymap` and `describe-keymaps` are ordinary registry commands.
+The document context map is `emacs`: C-f/C-b, C-n/C-p, C-a/C-e, C-v/M-v, C-d, C-g, M-</M->, and the matching Ctrl-Shift selection chords. The minibuffer map uses the same motion keys, with M-p/M-n for history alongside Up/Down. Global still holds arrows, Page Up/Page Down, C-x C-s (save), C-x C-r (reload), C-x C-p (next presentation) and C-x h (select all). `buffer-start`, `buffer-end`, `keymap.pop`, `describe-keymap` and `describe-keymaps` are ordinary registry commands.
 
 ## Introspection
 

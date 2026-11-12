@@ -8,7 +8,7 @@ M-x runs a named command; M-: evaluates Lua in the running editor. Both use the 
 | Escape / Ctrl-G | Cancel and return to the document |
 | Tab | Complete a prefix; repeat to cycle ambiguous matches |
 | Up / Down | Cycle active completions, otherwise navigate this context's history |
-| Left / Right, Home / End, C-f / C-b, C-n / C-p, C-a / C-e | Move by grapheme or within the line |
+| Left / Right, Home / End, C-f / C-b, C-n / C-p, C-a / C-e, C-v / M-v | Move by grapheme, line or screenful |
 | Shift plus a movement key, Ctrl-X h | Extend selection, or select all |
 | M-p / M-n | Cycle this context's history, like Up / Down |
 | Backspace / Delete, Ctrl-Z / Ctrl-Y | Edit input, undo / redo input edits |

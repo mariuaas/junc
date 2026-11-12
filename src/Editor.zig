@@ -9,6 +9,7 @@ const Connection = @import("Connection.zig");
 const Minibuffer = @import("Minibuffer.zig");
 const Presentation = @import("Presentation.zig");
 const intent = @import("intent.zig");
+const local = @import("local_document.zig");
 const protocol = @import("protocol.zig");
 const runtime = @import("runtime.zig");
 const vm = @import("vm.zig");
@@ -289,11 +290,21 @@ pub fn cancelMinibuffer(self: *Editor) !void {
 }
 
 /// Pushes a table of copied observations of focus for Lua. Cursor and selection semantics come
-/// from Litura in the authoritative host.
+/// from Litura in the authoritative host. Page targets use this client's viewport.
 pub fn pushCommandContext(self: *Editor, focus: Focus) !void {
+    const paging = try self.pages(focus);
     const context = try self.snapshot(focus);
     defer self.allocator.free(context.selection);
-    self.pushContext(focus, context);
+    self.pushContext(focus, context, paging);
+}
+
+/// Clamps the document viewport's first line. Page commands set this before moving the cursor so
+/// follow-scroll does not pull the window back by a single row.
+pub fn scroll(self: *Editor, top: u32) void {
+    const lines = self.connection.current().lines;
+    const rows = self.pageRows(.document);
+    const max_top = if (lines > rows) lines - rows else 0;
+    self.viewport.top = @min(top, max_top);
 }
 
 // Selection is owned through the editor allocator; other strings borrow their observation.
@@ -308,9 +319,75 @@ fn snapshot(self: *Editor, focus: Focus) !protocol.Snapshot {
     }
 }
 
-fn pushContext(self: *Editor, focus: Focus, context: protocol.Snapshot) void {
+const Page = struct { up: u32, down: u32, up_top: u32, down_top: u32 };
+
+fn pageRows(self: *const Editor, focus: Focus) u32 {
+    if (focus == .minibuffer) return 1;
+    const height = @max(1, self.viewport.height);
+    const mini: u32 = if (self.minibuffer.context != null) @min(3, height) else 0;
+    const status_rows: u32 = if (self.presentation.status_visible and height > mini) 1 else 0;
+    return @max(1, height - mini - status_rows);
+}
+
+fn pageWindow(top: u32, line: u32, lines: u32, rows: u32, toward: enum { up, down }) struct { top: u32, line: u32 } {
+    const last = lines -| 1;
+    const step = @max(1, rows -| 1);
+    const max_top = if (lines > rows) lines - rows else 0;
+    const new_top = switch (toward) {
+        .down => @min(top + step, max_top),
+        .up => top -| step,
+    };
+    var rel = if (line >= top) line - top else 0;
+    if (rel >= rows) rel = rows -| 1;
+    return .{ .top = new_top, .line = @min(new_top + rel, last) };
+}
+
+fn lineAt(self: *Editor, focus: Focus, line: u32, column: u32) !u32 {
+    switch (focus) {
+        .document => return self.connection.linePosition(line, column),
+        .minibuffer => {
+            const target: local.Target = .{
+                .document = &self.minibuffer.document,
+                .cursor = self.minibuffer.cursor,
+                .session = self.minibuffer.session,
+            };
+            return target.linePosition(line, column);
+        },
+    }
+}
+
+fn pages(self: *Editor, focus: Focus) !Page {
+    const rows = self.pageRows(focus);
+    const top = if (focus == .document) self.viewport.top else 0;
+    const loc: struct { line: u32, col: u32, lines: u32 } = switch (focus) {
+        .document => .{
+            .line = self.connection.current().line,
+            .col = self.connection.current().col,
+            .lines = self.connection.current().lines,
+        },
+        .minibuffer => blk: {
+            const cursor = try self.minibuffer.position();
+            const lc = try self.minibuffer.document.positionToLineCol(cursor);
+            break :blk .{
+                .line = lc.line,
+                .col = lc.col,
+                .lines = self.minibuffer.document.lineCount(),
+            };
+        },
+    };
+    const down = pageWindow(top, loc.line, loc.lines, rows, .down);
+    const up = pageWindow(top, loc.line, loc.lines, rows, .up);
+    return .{
+        .down = try self.lineAt(focus, down.line, loc.col),
+        .up = try self.lineAt(focus, up.line, loc.col),
+        .down_top = down.top,
+        .up_top = up.top,
+    };
+}
+
+fn pushContext(self: *Editor, focus: Focus, context: protocol.Snapshot, paging: Page) void {
     const state = self.state;
-    lua.lua_createtable(state, 0, 30);
+    lua.lua_createtable(state, 0, 36);
     string(state, @tagName(focus));
     lua.lua_setfield(state, -2, "surface");
     string(state, self.preset.slice());
@@ -328,6 +405,10 @@ fn pushContext(self: *Editor, focus: Focus, context: protocol.Snapshot) void {
         const name = if (comptime std.mem.eql(u8, field.name, "buffer")) "buffer_id" else field.name;
         lua.lua_setfield(state, -2, name);
     }
+    number(state, "page_up", paging.up);
+    number(state, "page_down", paging.down);
+    number(state, "page_up_top", paging.up_top);
+    number(state, "page_down_top", paging.down_top);
 }
 
 // Current origins of focus: the selected buffer's latest observation, or the local minibuffer.
@@ -364,6 +445,7 @@ fn run(
     const state = self.state;
     const top = lua.lua_gettop(state);
     defer lua.lua_settop(self.state, if (self.state == state) top else 0);
+    const paging = try self.pages(focus);
     const context = try self.snapshot(focus);
     defer self.allocator.free(context.selection);
     // Origins are captured before Lua runs; a command that switches buffers cannot restamp them.
@@ -375,7 +457,7 @@ fn run(
     lua.lua_getfield(state, lua.LUA_GLOBALSINDEX, "editor");
     lua.lua_getfield(state, -1, @tagName(entry));
     string(state, key);
-    self.pushContext(focus, context);
+    self.pushContext(focus, context, paging);
     string(state, text);
     if (self.callLua(3, 1) != 0) {
         self.reportLuaError(state);

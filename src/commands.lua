@@ -113,6 +113,18 @@ M.command('beginning-of-line', M.commands.home, {description='Move to the start 
 M.command('end-of-line', M.commands['end'], {description='Move to the end of the current line', category='motion'})
 M.command('beginning-of-buffer', M.commands['buffer-start'], {description='Move to the start of the buffer', category='motion'})
 M.command('end-of-buffer', M.commands['buffer-end'], {description='Move to the end of the buffer', category='motion'})
+local function page(c, position, top, extend)
+  if c.surface=='document' then M.scroll(top) end
+  return M.move(c, position, extend)
+end
+M.command('page-down', function(c) return page(c, c.page_down, c.page_down_top) end,
+  {description='Move down by one screen, keeping the cursor in the window', category='motion'})
+M.command('page-up', function(c) return page(c, c.page_up, c.page_up_top) end,
+  {description='Move up by one screen, keeping the cursor in the window', category='motion'})
+M.command('select-page-down', function(c) return page(c, c.page_down, c.page_down_top, true) end)
+M.command('select-page-up', function(c) return page(c, c.page_up, c.page_up_top, true) end)
+M.command('scroll-up', M.commands['page-down'], {description='Emacs name for page-down', category='motion'})
+M.command('scroll-down', M.commands['page-up'], {description='Emacs name for page-up', category='motion'})
 M.command('delete-char', M.commands.delete, {description='Delete the next grapheme, or the selection', category='editing'})
 M.command('keyboard-quit', function()
   M.cancel_key_sequence()
@@ -149,10 +161,12 @@ M.keymap('emacs', {
   ['ctrl-f']='forward-char', ['ctrl-b']='backward-char',
   ['ctrl-n']='next-line', ['ctrl-p']='previous-line',
   ['ctrl-a']='beginning-of-line', ['ctrl-e']='end-of-line',
+  ['ctrl-v']='page-down', ['alt-v']='page-up',
   ['ctrl-d']='delete-char', ['ctrl-g']='keyboard-quit',
   ['ctrl-shift-f']='select-right', ['ctrl-shift-b']='select-left',
   ['ctrl-shift-n']='select-down', ['ctrl-shift-p']='select-up',
   ['ctrl-shift-a']='select-home', ['ctrl-shift-e']='select-end',
+  ['ctrl-shift-v']='select-page-down', ['alt-shift-v']='select-page-up',
   ['alt-<']='beginning-of-buffer', ['alt-shift-<']='beginning-of-buffer',
   ['alt->']='end-of-buffer', ['alt-shift->']='end-of-buffer',
 })
@@ -164,9 +178,12 @@ M.keymap('minibuffer', {
   ['ctrl-f']='forward-char', ['ctrl-b']='backward-char',
   ['ctrl-n']='next-line', ['ctrl-p']='previous-line',
   ['ctrl-a']='beginning-of-line', ['ctrl-e']='end-of-line', ['ctrl-d']='delete-char',
+  ['ctrl-v']='page-down', ['alt-v']='page-up',
   ['alt-<']='beginning-of-buffer', ['alt-shift-<']='beginning-of-buffer',
   ['alt->']='end-of-buffer', ['alt-shift->']='end-of-buffer',
 })
+M.bind('page-down', 'page-down'); M.bind('page-up', 'page-up')
+M.bind('shift-page-down', 'select-page-down'); M.bind('shift-page-up', 'select-page-up')
 M.bind('ctrl-x ctrl-s', 'save')
 M.bind('ctrl-x ctrl-r', 'reload')
 M.bind('ctrl-x ctrl-p', 'presentation-next')

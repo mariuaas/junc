@@ -122,6 +122,8 @@ fn keyName(key: vaxis.Key, buffer: *[64]u8) []const u8 {
         vaxis.Key.down => "down",
         vaxis.Key.home => "home",
         vaxis.Key.end => "end",
+        vaxis.Key.page_up, vaxis.Key.kp_page_up => "page-up",
+        vaxis.Key.page_down, vaxis.Key.kp_page_down => "page-down",
         vaxis.Key.backspace => "backspace",
         vaxis.Key.delete => "delete",
         vaxis.Key.enter => "enter",

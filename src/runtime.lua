@@ -15,6 +15,7 @@ return function(editor)
   function editor.shutdown_server() return checked(editor._shutdown_server()) end
   function editor.input_action(action) return checked(editor._input_action(action)) end
   function editor.state() return checked(editor._state()) end
+  function editor.scroll(top) return checked(editor._scroll(top)) end
   function editor.output(text) return checked(editor._output(tostring(text))) end
   function editor.prompt(options)
     assert(type(options)=='table' and type(options.submit)=='function', 'prompt requires submit(value)')
