@@ -1,8 +1,10 @@
-//! Owns a viewport token cache. Litura owns providers and parsing; Lua owns their appearance.
+//! Server-side token cache for one hosted buffer. Litura owns providers and parsing; the cache
+//! owns the spans copied into views. Clients render those spans and never own a cache.
 const std = @import("std");
 const litura = @import("litura");
 const options = @import("build_options");
-const Category = @import("syntax.zig").Category;
+const syntax = @import("syntax.zig");
+const Category = syntax.Category;
 const Syntax = @This();
 
 allocator: std.mem.Allocator,
@@ -17,9 +19,9 @@ state: State = .plain,
 query_count: usize = 0,
 refresh_count: usize = 0,
 
-pub const State = enum { plain, ready, unavailable, large };
+pub const State = syntax.State;
 pub const Language = enum { zig, lua, fennel };
-pub const Span = struct { start: u32, end: u32, category: Category };
+pub const Span = syntax.Span;
 const languages = .{
     .{ ".zig", Language.zig }, .{ ".lua", Language.lua }, .{ ".fnl", Language.fennel },
 };
@@ -129,14 +131,6 @@ pub fn update(self: *Syntax, document: *litura.BufferEngine, range: litura.types
     self.state = .ready;
 }
 
-/// Binary search over Litura's sorted, non-overlapping spans; positions are grapheme offsets.
 pub fn categoryAt(self: *const Syntax, position: u32) ?Category {
-    var low: usize = 0;
-    var high = self.spans.len;
-    while (low < high) {
-        const middle = low + (high - low) / 2;
-        if (self.spans[middle].end <= position) low = middle + 1 else high = middle;
-    }
-    if (low < self.spans.len and self.spans[low].start <= position) return self.spans[low].category;
-    return null;
+    return syntax.categoryAt(self.spans, position);
 }

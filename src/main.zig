@@ -22,13 +22,13 @@ pub fn main(init: std.process.Init) !void {
     const path: ?[]const u8 = if (args.len == 2) args[1] else null;
     const executable = try std.process.executablePathAlloc(init.io, allocator);
     defer allocator.free(executable);
-    var remote = try junc.Remote.connect(allocator, .{
+    var connection = try junc.Connection.connect(allocator, .{
         .executable = executable,
         .runtime_directory = init.environ_map.get("JUNC_RUNTIME_DIR"),
     });
-    defer remote.deinit();
-    try remote.open(.{ .path = path });
-    var editor = try junc.Editor.initAttached(allocator, &remote);
+    defer connection.deinit();
+    try connection.open(.{ .path = path });
+    var editor = try junc.Editor.init(allocator, &connection);
     defer editor.deinit();
     editor.reloadFiles(.{ .commands = false }) catch |err| editor.report(@errorName(err));
     var surface: Surface = .{};
@@ -53,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
     surface.monochrome = vx.caps.no_color;
     var redraw = true;
     while (!editor.quit) {
-        if (try remote.pollInvalidations()) redraw = true;
+        if (try connection.pollInvalidations()) redraw = true;
         const size = try tty.getWinsize();
         if (size.cols != vx.window().width or size.rows != vx.window().height) {
             try vx.resize(allocator, tty.writer(), size);
@@ -91,7 +91,7 @@ pub fn main(init: std.process.Init) !void {
                         if (owned == .validation_report) editor.report(owned.validation_report.message);
                     }
                 } else |err| {
-                    if (remote.fd < 0) return error.ConnectionLost;
+                    if (!connection.connected()) return error.ConnectionLost;
                     if (err != error.LuaError and err != error.ServerRejected) editor.report(@errorName(err));
                 }
             },

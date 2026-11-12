@@ -1,4 +1,4 @@
-"""Private daemon fixtures and version-two protocol helpers for integration/PTY tests."""
+"""Private daemon fixtures and hosting-protocol helpers for integration/PTY tests."""
 import json
 import os
 from pathlib import Path
@@ -7,6 +7,9 @@ import socket
 import struct
 import tempfile
 import time
+
+# Must match protocol.version in src/protocol.zig.
+PROTOCOL_VERSION = 3
 
 def wait_ready(process, output, drain):
     """Auto-spawn adds startup work: wait for actual terminal initialization instead of a fixed delay."""
@@ -39,7 +42,7 @@ class Connection:
         return bytes(result)
 
     def call(self, op, **fields):
-        request = dict(version=2, id=self.next_id, op=op, **fields)
+        request = dict(version=PROTOCOL_VERSION, id=self.next_id, op=op, **fields)
         self.next_id += 1
         frame = json.dumps(request).encode()
         self.socket.sendall(struct.pack('<I', len(frame)) + frame)
@@ -51,7 +54,7 @@ class Connection:
     def reply(self, expected_id):
         while True:
             response = self.envelope()
-            assert response['version'] == 2, response
+            assert response['version'] == PROTOCOL_VERSION, response
             if response['id'] == 0:
                 assert response['invalidation'] is not None, response
                 self.notifications.append(response['invalidation'])

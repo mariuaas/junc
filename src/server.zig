@@ -98,13 +98,12 @@ pub fn handle(
         .observe => {
             _ = try attachment.target(registry, request.buffer);
             const state = try attachment.snapshot(registry, arena);
+            // Range normalization only: a peer may have removed lines the client last saw. The
+            // client owns viewport policy and re-requests if the cursor falls outside this range.
             var query = request;
             query.revision = state.revision;
             query.line_count = @max(1, request.line_count);
             query.first_line = @min(request.first_line, state.lines - 1);
-            if (state.line < query.first_line) query.first_line = state.line;
-            if (state.line - query.first_line >= query.line_count)
-                query.first_line = state.line - (query.line_count - 1);
             response.state = state;
             response.view = try registry.view(arena, query);
         },
@@ -140,6 +139,40 @@ pub fn handle(
         .shutdown => if (registry.dirty()) {
             return error.DirtyBuffers;
         },
+    }
+    return response;
+}
+
+/// Runs one request for an attachment and converts a rejection into a failure reply. A failure
+/// carries the attachment's fresh observation so the client can redraw; the rejected request is
+/// never retried. Shared by the socket host and the in-process host.
+pub fn respond(
+    registry: *Registry,
+    attachment: *Registry.Attachment,
+    arena: std.mem.Allocator,
+    request: protocol.Request,
+) protocol.Response {
+    const response = handle(registry, attachment, arena, request) catch |err|
+        return failure(registry, attachment, arena, request.id, err);
+    return response;
+}
+
+fn failure(
+    registry: *Registry,
+    attachment: *Registry.Attachment,
+    arena: std.mem.Allocator,
+    id: u32,
+    err: anyerror,
+) protocol.Response {
+    var response: protocol.Response = .{
+        .id = id,
+        .failure = .{ .code = @errorName(err), .message = @errorName(err) },
+    };
+    if (attachment.selected != null) {
+        response.state = attachment.snapshot(registry, arena) catch |snapshot_error| failed: {
+            log.warn("failure observation unavailable: {s}", .{@errorName(snapshot_error)});
+            break :failed null;
+        };
     }
     return response;
 }
@@ -286,19 +319,32 @@ const Host = struct {
     fn process(self: *Host, client: *Client, bytes: []const u8, now: i64) !void {
         var arena: std.heap.ArenaAllocator = .init(self.allocator);
         defer arena.deinit();
+        const envelope = try std.json.parseFromSliceLeaky(protocol.Envelope, arena.allocator(), bytes, .{
+            .ignore_unknown_fields = true,
+        });
+        if (envelope.version != protocol.version) {
+            client.closing = true;
+            return self.queue(client, .{
+                .id = envelope.id,
+                .server_pid = c.getpid(),
+                .generation = self.generation,
+                .failure = .{
+                    .code = "UnsupportedVersion",
+                    .message = try std.fmt.allocPrint(
+                        arena.allocator(),
+                        "This junc server speaks hosting protocol {d}; the client sent {d}",
+                        .{ protocol.version, envelope.version },
+                    ),
+                },
+            }, now);
+        }
         const request = try std.json.parseFromSliceLeaky(protocol.Request, arena.allocator(), bytes, .{});
         var response: protocol.Response = .{
             .id = request.id,
             .server_pid = c.getpid(),
             .generation = self.generation,
         };
-        if (request.version != protocol.version) {
-            response.failure = .{
-                .code = "UnsupportedVersion",
-                .message = "Incompatible junc hosting protocol",
-            };
-            client.closing = true;
-        } else if (!client.attached) {
+        if (!client.attached) {
             if (request.op == .ping) {
                 response.busy = self.attachedCount() != 0;
                 client.closing = true;
@@ -343,16 +389,10 @@ const Host = struct {
         arena: std.mem.Allocator,
     ) protocol.Response {
         const before = if (self.registry.get(request.buffer)) |buffer| buffer.document.revision else |_| null;
-        var response: protocol.Response = transaction: {
-            self.guard(client.fd, request) catch |err| break :transaction .{
-                .id = request.id,
-                .failure = .{ .code = @errorName(err), .message = @errorName(err) },
-            };
-            break :transaction handle(&self.registry, &client.attachment, arena, request) catch |err| .{
-                .id = request.id,
-                .failure = .{ .code = @errorName(err), .message = @errorName(err) },
-            };
-        };
+        const response = if (self.guard(client.fd, request))
+            respond(&self.registry, &client.attachment, arena, request)
+        else |err|
+            failure(&self.registry, &client.attachment, arena, request.id, err);
         // Hints describe potentially changed observations, including a commit followed by an error.
         // They neither manufacture canonical events nor promise one notification per submission.
         const after = if (self.registry.get(request.buffer)) |buffer| buffer.document.revision else |_| null;
@@ -362,12 +402,6 @@ const Host = struct {
             },
             .open, .save, .kill => self.invalidate(client.fd, null),
             else => {},
-        }
-        if (response.failure != null and client.attachment.selected != null) {
-            response.state = client.attachment.snapshot(&self.registry, arena) catch |err| failed: {
-                log.warn("failure observation unavailable: {s}", .{@errorName(err)});
-                break :failed null;
-            };
         }
         if (request.op == .kill and response.failure == null) {
             for (self.clients.items) |*other| if (other.fd != client.fd) {

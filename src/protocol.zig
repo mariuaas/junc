@@ -1,7 +1,9 @@
 //! Version-two hosting messages. Slices borrow their decoded frame arena, never document pointers.
-const Syntax = @import("SyntaxCache.zig");
+const syntax = @import("syntax.zig");
 
-pub const version = 2;
+/// Bumped whenever a message's shape or an operation's meaning changes. Version 3 made `observe`
+/// return the requested range instead of moving it to the session's cursor.
+pub const version = 3;
 pub const frame_bytes_max = 64 * 1024 * 1024;
 pub const Op = enum {
     hello,
@@ -29,6 +31,9 @@ pub const Edit = struct {
     position: u32 = 0,
     mark: ?u32 = null,
 };
+/// The fields every version keeps, read before decoding the rest so a peer speaking another version
+/// gets an explicit incompatibility rather than a decoding failure.
+pub const Envelope = struct { version: u32, id: u32 = 0 };
 pub const Request = struct {
     version: u32 = version,
     id: u32,
@@ -84,8 +89,8 @@ pub const View = struct {
     end: u32,
     text: []const u8,
     boundaries: []const u32,
-    tokens: []const Syntax.Span,
-    syntax_state: Syntax.State,
+    tokens: []const syntax.Span,
+    syntax_state: syntax.State,
 };
 pub const Event = struct {
     kind: enum { edit_event, interaction_result, validation_report },

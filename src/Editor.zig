@@ -1,128 +1,78 @@
-//! Client-local Lua, presentation and input state; borrows a remote host or owns an in-process test
-//! engine.
+//! One client's interaction state: Lua policy, presentation, the minibuffer and per-buffer
+//! viewports. The selected buffer's document, this client's cursor and session in it, and its
+//! syntax belong to the host behind `connection`; only the minibuffer's input document is local.
 const std = @import("std");
 const litura = @import("litura");
 const lua = @import("lua");
 const Editor = @This();
+const Connection = @import("Connection.zig");
 const Minibuffer = @import("Minibuffer.zig");
-const Target = @import("editing.zig").Target;
-const runtime = @import("runtime.zig");
-const Syntax = @import("SyntaxCache.zig");
 const Presentation = @import("Presentation.zig");
-const Remote = @import("Remote.zig");
+const intent = @import("intent.zig");
 const protocol = @import("protocol.zig");
+const runtime = @import("runtime.zig");
+const vm = @import("vm.zig");
 
 allocator: std.mem.Allocator,
-document: ?*litura.BufferEngine,
-remote: ?*Remote = null,
-viewports: std.ArrayListUnmanaged(BufferViewport) = .empty,
-cursor: litura.anchors.AnchorId,
-session: u32,
+connection: *Connection,
 state: *lua.lua_State,
-syntax: Syntax,
 minibuffer: Minibuffer,
 runtime_depth: usize = 0,
 reload_requested: bool = false,
 presentation: Presentation.Frame,
 preset: Presentation.Name,
 terminal: Presentation.Terminal = .{},
+/// The selected buffer's view: terminal size in cells, `top` in lines and `left` in cells.
 viewport: Presentation.Viewport = .{},
+/// Scroll offsets of other buffers this client has shown, restored when it selects them again.
+viewports: std.ArrayListUnmanaged(BufferViewport) = .empty,
 quit: bool = false,
 message: [512]u8 = @splat(0),
 message_len: usize = 0,
 
 pub const Submission = @import("submission.zig").Result;
+/// The input surface a command observes and edits. Each has its own revision domain.
+pub const Focus = enum { document, minibuffer };
 const BufferViewport = struct { buffer: u32, top: u32, left: u32 };
 
-/// In-process host for non-terminal tests. Owns a stable engine, minibuffer and VM; do not copy.
-pub fn init(allocator: std.mem.Allocator, text: []const u8, path: ?[]const u8) !Editor {
-    const document = try allocator.create(litura.BufferEngine);
-    errdefer allocator.destroy(document);
-    document.* = try litura.BufferEngine.initFromText(allocator, text, path);
-    errdefer document.deinit();
-    const cursor = try document.createAnchor(0, .sticky);
-    const session = try document.createSession(&.{cursor});
-    return initState(allocator, document, null, cursor, session);
-}
+// A decoded intent. Strings borrow Lua values that stay on the stack until dispatch returns.
+const Action = union(enum) {
+    feedback: []const u8,
+    quit,
+    save,
+    reload,
+    minibuffer: Minibuffer.Context,
+    presentation: []const u8,
+    edit: protocol.Edit,
+};
 
-/// Borrows an attached connection at a stable address; the caller keeps it alive through deinit.
-/// No main-document engine or local text replica is constructed. Keep this Editor stable after
-/// dispatch
-/// or REPL evaluation installs native closures in its VM; do not copy it.
-pub fn initAttached(allocator: std.mem.Allocator, remote: *Remote) !Editor {
-    const state = remote.current();
-    return initState(allocator, null, remote, .{ .value = state.cursor_anchor }, state.session);
-}
-
-fn initState(
-    allocator: std.mem.Allocator,
-    document: ?*litura.BufferEngine,
-    remote: ?*Remote,
-    cursor: litura.anchors.AnchorId,
-    session: u32,
-) !Editor {
-    std.debug.assert(document != null or remote != null);
-    std.debug.assert(document == null or remote == null);
+/// Borrows connection, which must already observe a selected buffer and outlive this Editor. Keep
+/// this Editor at a stable address once dispatch or REPL evaluation installs native closures in its
+/// VM; do not copy it.
+pub fn init(allocator: std.mem.Allocator, connection: *Connection) !Editor {
     var minibuffer = try Minibuffer.init(allocator);
     errdefer minibuffer.deinit();
-    const state = try newState();
+    const state = try vm.create();
     errdefer lua.lua_close(state);
-    const path = if (remote) |host| host.current().path else document.?.path;
     var editor: Editor = .{
         .allocator = allocator,
-        .document = document,
-        .remote = remote,
-        .cursor = cursor,
-        .session = session,
+        .connection = connection,
         .state = state,
-        .syntax = Syntax.init(allocator, path),
         .minibuffer = minibuffer,
         .presentation = undefined,
         .preset = try Presentation.defaultName(state),
     };
-    const context = try editor.presentationContext();
+    const context = editor.presentationContext();
     try Presentation.validate(state, editor.terminal, context);
     editor.presentation = try Presentation.resolve(state, editor.preset, editor.terminal, context);
-    if (document) |engine| editor.syntax.attach(engine) catch |err| editor.report(@errorName(err));
     return editor;
 }
 
 pub fn deinit(self: *Editor) void {
     self.minibuffer.deinit();
-    self.syntax.deinit();
     lua.lua_close(self.state);
-    if (self.document) |document| {
-        document.deinit();
-        self.allocator.destroy(document);
-    }
     self.viewports.deinit(self.allocator);
     self.* = undefined;
-}
-
-fn evaluate(state: *lua.lua_State, source: []const u8) !void {
-    if (lua.luaL_loadbuffer(state, source.ptr, source.len, "junc") != 0) return error.LuaError;
-    if (lua.lua_pcall(state, 0, 1, 0) != 0) return error.LuaError;
-}
-
-fn newState() !*lua.lua_State {
-    const state = lua.luaL_newstate() orelse return error.OutOfMemory;
-    errdefer lua.lua_close(state);
-    lua.luaL_openlibs(state);
-    const commands = @embedFile("commands.lua");
-    if (lua.luaL_loadbuffer(state, commands.ptr, commands.len, "commands") != 0) return error.LuaError;
-    try evaluate(state, @embedFile("keymaps.lua"));
-    if (lua.lua_pcall(state, 1, 1, 0) != 0) return error.LuaError;
-    lua.lua_setfield(state, lua.LUA_GLOBALSINDEX, "editor");
-    try evaluate(state, @embedFile("runtime.lua"));
-    lua.lua_getfield(state, lua.LUA_GLOBALSINDEX, "editor");
-    if (lua.lua_pcall(state, 1, 0, 0) != 0) return error.LuaError;
-    try evaluate(state, @embedFile("extension.lua"));
-    lua.lua_getfield(state, lua.LUA_GLOBALSINDEX, "editor");
-    if (lua.lua_pcall(state, 1, 0, 0) != 0) return error.LuaError;
-    try validateKeymaps(state);
-    try evaluate(state, Presentation.default_source);
-    lua.lua_setfield(state, lua.LUA_GLOBALSINDEX, "presentation");
-    return state;
 }
 
 /// Replaces command implementations only after loading succeeds. Document/session/history survive.
@@ -132,34 +82,24 @@ pub fn reload(self: *Editor, extension: ?[]const u8) !void {
 
 /// Stages commands and presentation together; invalid policy leaves the live VM and frame intact.
 pub fn reloadSources(self: *Editor, extension: ?[]const u8, presentation: ?[]const u8) !void {
-    const replacement = try newState();
+    const replacement = try vm.create();
     errdefer lua.lua_close(replacement);
-    if (extension) |source| {
-        evaluate(replacement, source) catch |err| {
-            self.reportLuaError(replacement);
-            return err;
-        };
-        lua.lua_getfield(replacement, lua.LUA_GLOBALSINDEX, "editor");
-        if (lua.lua_pcall(replacement, 1, 0, 0) != 0) {
-            self.reportLuaError(replacement);
-            return error.LuaError;
-        }
-    }
-    if (presentation) |source| {
-        evaluate(replacement, source) catch |err| {
-            self.reportLuaError(replacement);
-            return err;
-        };
-        lua.lua_setfield(replacement, lua.LUA_GLOBALSINDEX, "presentation");
-    }
-    const context = try self.presentationContext();
-    try Presentation.validate(replacement, self.terminal, context);
-    const frame = try Presentation.resolve(replacement, self.preset, self.terminal, context);
-    validateKeymaps(replacement) catch |err| {
+    if (extension) |source| vm.loadExtension(replacement, source) catch |err| {
         self.reportLuaError(replacement);
         return err;
     };
-    try setKeyContext(replacement, if (self.minibuffer.context != null and
+    if (presentation) |source| vm.loadPresentation(replacement, source) catch |err| {
+        self.reportLuaError(replacement);
+        return err;
+    };
+    const context = self.presentationContext();
+    try Presentation.validate(replacement, self.terminal, context);
+    const frame = try Presentation.resolve(replacement, self.preset, self.terminal, context);
+    vm.validateKeymaps(replacement) catch |err| {
+        self.reportLuaError(replacement);
+        return err;
+    };
+    try vm.setKeyContext(replacement, if (self.minibuffer.context != null and
         self.minibuffer.context != .prompt) "minibuffer" else "document", true);
     lua.lua_close(self.state);
     self.state = replacement;
@@ -173,24 +113,23 @@ pub fn reloadSources(self: *Editor, extension: ?[]const u8, presentation: ?[]con
 }
 
 /// Copies document observations only; presentation callbacks have no native mutation API.
-pub fn presentationContext(self: *Editor) !Presentation.Context {
-    const cursor_position = try self.position();
-    const target = self.mainTarget();
-    const lc = try target.positionToLineCol(cursor_position);
+/// Strings borrow the connection's latest observation and this editor's status.
+pub fn presentationContext(self: *const Editor) Presentation.Context {
+    const state = self.connection.current();
     return .{
-        .path = target.path() orelse "[scratch]",
-        .name = target.name(),
-        .buffer_id = target.bufferId(),
+        .path = state.path orelse "[scratch]",
+        .name = state.name,
+        .buffer_id = state.buffer,
         .message = self.status(),
-        .dirty = target.dirty(),
-        .cursor = cursor_position,
-        .mark = try self.mark(),
-        .line = lc.line + 1,
-        .column = lc.col + 1,
-        .count = target.graphemeCount(),
-        .lines = target.lineCount(),
-        .revision = target.revision(),
-        .interaction_revision = try target.interactionRevision(),
+        .dirty = state.dirty,
+        .cursor = state.cursor,
+        .mark = state.mark,
+        .line = state.line + 1,
+        .column = state.col + 1,
+        .count = state.count,
+        .lines = state.lines,
+        .revision = state.revision,
+        .interaction_revision = state.interaction_revision,
         .width = self.viewport.width,
         .height = self.viewport.height,
         .top = self.viewport.top,
@@ -201,13 +140,12 @@ pub fn presentationContext(self: *Editor) !Presentation.Context {
 /// A failed callback keeps the last complete frame, including colors and layout policy.
 pub fn present(self: *Editor, viewport: Presentation.Viewport) !void {
     self.viewport = viewport;
-    const frame = try Presentation.resolve(
+    self.presentation = try Presentation.resolve(
         self.state,
         self.preset,
         self.terminal,
-        try self.presentationContext(),
+        self.presentationContext(),
     );
-    self.presentation = frame;
 }
 
 /// Switches a Lua-defined preset without recreating any document or terminal resource.
@@ -217,7 +155,7 @@ pub fn setPreset(self: *Editor, name: []const u8) !void {
         self.state,
         candidate,
         self.terminal,
-        try self.presentationContext(),
+        self.presentationContext(),
     );
     self.preset = candidate;
     self.presentation = frame;
@@ -245,12 +183,13 @@ pub fn reloadFiles(self: *Editor, options: struct { commands: bool = true }) !vo
     try self.reloadSources(extension, presentation);
 }
 
-pub fn position(self: *const Editor) !u32 {
-    return self.mainTarget().position();
+/// Cursor in the selected buffer, from this client's latest observation of its own session.
+pub fn position(self: *const Editor) u32 {
+    return self.connection.current().cursor;
 }
 
-pub fn mark(self: *Editor) !?u32 {
-    return self.mainTarget().mark();
+pub fn mark(self: *const Editor) ?u32 {
+    return self.connection.current().mark;
 }
 
 /// Borrows the sanitized message until report or deinit.
@@ -286,76 +225,17 @@ fn string(state: *lua.lua_State, value: []const u8) void {
     _ = lua.lua_pushlstring(state, value.ptr, value.len);
 }
 
-// A computed intent field is Lua code too. Keep ordinary tables on the direct lookup path.
-fn pushIntentField(self: *Editor, table: c_int, name: [:0]const u8) !void {
-    const state = self.state;
-    if (lua.lua_getmetatable(state, table) == 0) {
-        lua.lua_getfield(state, table, name);
-        return;
-    }
-    lua.lua_settop(state, -2);
-    lua.lua_pushcclosure(state, intentFieldCallback, 0);
-    lua.lua_pushvalue(state, table);
-    string(state, name);
-    // This is decoding, not a new explicit command scope; preserve runtime_depth.
-    if (lua.lua_pcall(state, 2, 1, 0) != 0) {
-        self.reportLuaError(state);
-        return error.LuaError;
-    }
-}
-
-fn intentFieldCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
-    const state = maybe_state.?;
-    lua.lua_pushvalue(state, 2);
-    // Any metamethod error unwinds only this resource-free C callback into lua_pcall.
-    lua.lua_gettable(state, 1);
-    return 1;
-}
-
-fn fieldNumber(self: *Editor, table: c_int, name: [:0]const u8) !u32 {
-    const state = self.state;
-    try self.pushIntentField(table, name);
-    defer lua.lua_settop(state, -2);
-    if (lua.lua_type(state, -1) != lua.LUA_TNUMBER) return error.InvalidCommand;
-    const value = lua.lua_tonumber(state, -1);
-    if (!std.math.isFinite(value) or value < 0 or value > std.math.maxInt(u32) or
-        @floor(value) != value)
-    {
-        return error.InvalidCommand;
-    }
-    return @intFromFloat(value);
-}
-
-fn fieldString(self: *Editor, table: c_int, name: [:0]const u8) ![]const u8 {
-    // Keep the value rooted until dispatch restores the stack, even for computed __index fields.
-    const state = self.state;
-    try self.pushIntentField(table, name);
-    if (lua.lua_type(state, -1) != lua.LUA_TSTRING) return error.InvalidCommand;
-    var len: usize = 0;
-    const ptr = lua.lua_tolstring(state, -1, &len);
-    return ptr[0..len];
-}
-
-fn optionalNumber(self: *Editor, table: c_int, name: [:0]const u8) !?u32 {
-    const state = self.state;
-    try self.pushIntentField(table, name);
-    const missing = lua.lua_type(state, -1) == lua.LUA_TNIL;
-    lua.lua_settop(state, -2);
-    return if (missing) null else try self.fieldNumber(table, name);
-}
-
-/// Runs a Lua key binding and submits its returned intent. Returns an owning observable result.
-/// Lua sees a revision-stamped snapshot; every text/interaction change calls BufferEngine.submit.
-/// Routes normalized input to exactly one focused Litura surface.
+/// Runs a Lua key binding for the focused surface and performs its returned intent. Returns an
+/// owning submission summary for edits. Lua sees a revision-stamped snapshot; every text or
+/// interaction change is one Litura submission.
 pub fn dispatch(self: *Editor, key: []const u8, text: []const u8) !?Submission {
     runtime.bind(self);
     defer self.finishDeferred() catch |err| {
         if (err != error.LuaError) self.report(@errorName(err));
     };
-    const in_minibuffer = self.minibuffer.context != null;
-    const target = if (in_minibuffer) self.minibuffer.target() else self.mainTarget();
-    const result = try self.dispatchInto(target, key, text, false);
-    if (in_minibuffer) {
+    const focus: Focus = if (self.minibuffer.context != null) .minibuffer else .document;
+    const result = try self.run(focus, .dispatch, key, text);
+    if (focus == .minibuffer) {
         if (result) |value| {
             self.minibuffer.clearCandidates();
             if (value == .edit_event) self.minibuffer.resetNavigation();
@@ -364,29 +244,13 @@ pub fn dispatch(self: *Editor, key: []const u8, text: []const u8) !?Submission {
     return result;
 }
 
-/// Named invocation uses the same Lua execution and Litura submission bridge as keys.
+/// Named invocation uses the same Lua execution and submission path as keys, on the document.
 pub fn invoke(self: *Editor, name: []const u8, text: []const u8) !?Submission {
     runtime.bind(self);
     defer self.finishDeferred() catch |err| {
         if (err != error.LuaError) self.report(@errorName(err));
     };
-    return self.dispatchInto(self.mainTarget(), name, text, true);
-}
-
-pub fn mainTarget(self: *const Editor) Target {
-    if (self.remote) |remote| return .{
-        .remote = .{
-            .client = remote,
-            .buffer = remote.current().buffer,
-        },
-    };
-    return .{
-        .local = .{
-            .document = self.document.?,
-            .cursor = self.cursor,
-            .session = self.session,
-        },
-    };
+    return self.run(.document, .execute, name, text);
 }
 
 pub fn callLua(self: *Editor, arguments: c_int, results: c_int) c_int {
@@ -415,7 +279,8 @@ pub fn openMinibuffer(self: *Editor, context: Minibuffer.Context) !void {
 
 /// Focus changes discard pending key sequences without changing either document.
 pub fn syncKeyContext(self: *Editor) !void {
-    try setKeyContext(self.state, if (self.minibuffer.context != null) "minibuffer" else "document", false);
+    const context = if (self.minibuffer.context != null) "minibuffer" else "document";
+    try vm.setKeyContext(self.state, context, false);
 }
 
 pub fn cancelMinibuffer(self: *Editor) !void {
@@ -423,32 +288,30 @@ pub fn cancelMinibuffer(self: *Editor) !void {
     try self.syncKeyContext();
 }
 
-fn setKeyContext(state: *lua.lua_State, context: []const u8, reset: bool) !void {
-    const top = lua.lua_gettop(state);
-    defer lua.lua_settop(state, top);
-    lua.lua_getfield(state, lua.LUA_GLOBALSINDEX, "editor");
-    lua.lua_getfield(state, -1, "_keymap_focus");
-    string(state, context);
-    lua.lua_pushboolean(state, @intFromBool(reset));
-    if (lua.lua_pcall(state, 2, 0, 0) != 0) return error.LuaError;
-}
-
-fn validateKeymaps(state: *lua.lua_State) !void {
-    lua.lua_getfield(state, lua.LUA_GLOBALSINDEX, "editor");
-    lua.lua_getfield(state, -1, "validate_keymaps");
-    // On failure leave the Lua error available to the reload diagnostic.
-    if (lua.lua_pcall(state, 0, 0, 0) != 0) return error.LuaError;
-    lua.lua_settop(state, -2);
-}
-
-/// Pushes copied observations; cursor/selection semantics come from Litura in the authoritative
-/// host.
-pub fn pushCommandContext(self: *Editor, target: Target) !void {
-    const state = self.state;
-    const context = try target.snapshot(self.allocator);
+/// Pushes a table of copied observations of focus for Lua. Cursor and selection semantics come
+/// from Litura in the authoritative host.
+pub fn pushCommandContext(self: *Editor, focus: Focus) !void {
+    const context = try self.snapshot(focus);
     defer self.allocator.free(context.selection);
+    self.pushContext(focus, context);
+}
+
+// Selection is owned through the editor allocator; other strings borrow their observation.
+fn snapshot(self: *Editor, focus: Focus) !protocol.Snapshot {
+    switch (focus) {
+        .document => {
+            var state = self.connection.current();
+            state.selection = try self.allocator.dupe(u8, state.selection);
+            return state;
+        },
+        .minibuffer => return self.minibuffer.snapshot(self.allocator),
+    }
+}
+
+fn pushContext(self: *Editor, focus: Focus, context: protocol.Snapshot) void {
+    const state = self.state;
     lua.lua_createtable(state, 0, 30);
-    string(state, if (target.isMain(self.document)) "document" else "minibuffer");
+    string(state, @tagName(focus));
     lua.lua_setfield(state, -2, "surface");
     string(state, self.preset.slice());
     lua.lua_setfield(state, -2, "presentation");
@@ -467,25 +330,52 @@ pub fn pushCommandContext(self: *Editor, target: Target) !void {
     }
 }
 
-fn dispatchInto(
+// Current origins of focus: the selected buffer's latest observation, or the local minibuffer.
+fn origins(self: *Editor, focus: Focus) !intent.Origins {
+    switch (focus) {
+        .document => {
+            const state = self.connection.current();
+            return .{
+                .buffer = state.buffer,
+                .revision = state.revision,
+                .interaction_revision = state.interaction_revision,
+            };
+        },
+        .minibuffer => {
+            const document = &self.minibuffer.document;
+            return .{
+                .buffer = 0,
+                .revision = document.revision,
+                .interaction_revision = try document.interactionRevision(self.minibuffer.session),
+            };
+        },
+    }
+}
+
+// One command: snapshot focus, call Lua, decode its intent, perform it. The Lua stack is restored
+// on every path, unless a deferred reload replaced the VM.
+fn run(
     self: *Editor,
-    target: Target,
+    focus: Focus,
+    entry: enum { dispatch, execute },
     key: []const u8,
     text: []const u8,
-    named: bool,
 ) !?Submission {
-    errdefer if (self.remote) |host| {
-        if (host.errorMessage().len > 0) self.report(host.errorMessage());
-    };
     const state = self.state;
     const top = lua.lua_gettop(state);
     defer lua.lua_settop(self.state, if (self.state == state) top else 0);
-    const revision = target.revision();
-    const interaction_revision = try target.interactionRevision();
+    const context = try self.snapshot(focus);
+    defer self.allocator.free(context.selection);
+    // Origins are captured before Lua runs; a command that switches buffers cannot restamp them.
+    const before: intent.Origins = .{
+        .buffer = context.buffer,
+        .revision = context.revision,
+        .interaction_revision = context.interaction_revision,
+    };
     lua.lua_getfield(state, lua.LUA_GLOBALSINDEX, "editor");
-    lua.lua_getfield(state, -1, if (named) "execute" else "dispatch");
+    lua.lua_getfield(state, -1, @tagName(entry));
     string(state, key);
-    try self.pushCommandContext(target);
+    self.pushContext(focus, context);
     string(state, text);
     if (self.callLua(3, 1) != 0) {
         self.reportLuaError(state);
@@ -493,154 +383,177 @@ fn dispatchInto(
     }
     if (lua.lua_type(state, -1) == lua.LUA_TNIL) return null;
     if (lua.lua_type(state, -1) != lua.LUA_TTABLE) return error.InvalidCommand;
-    const intent_index = lua.lua_gettop(state);
-    const kind = try self.fieldString(intent_index, "kind");
-    if (std.mem.eql(u8, kind, "key-feedback")) {
-        self.report(try self.fieldString(intent_index, "message"));
-        return null;
-    }
-    if (!target.isMain(self.document) and !std.mem.eql(u8, kind, "replace") and
-        !std.mem.eql(u8, kind, "move") and !std.mem.eql(u8, kind, "undo") and
-        !std.mem.eql(u8, kind, "redo") and !std.mem.eql(u8, kind, "reload") and
-        !std.mem.eql(u8, kind, "minibuffer"))
-    {
+    const action = decode(state, lua.lua_gettop(state), focus, before) catch |err| {
+        if (err == error.LuaError) self.reportLuaError(state);
+        return err;
+    };
+    return self.perform(focus, action, before);
+}
+
+// Field reads can run Lua metamethods, so a kind unavailable in the minibuffer reads none.
+fn decode(state: *lua.lua_State, table: c_int, focus: Focus, before: intent.Origins) !Action {
+    const kind = try intent.kind(state, table);
+    if (focus == .minibuffer and !(if (kind) |value| value.availableInMinibuffer() else false)) {
         return error.UnavailableInMinibuffer;
     }
-    if (std.mem.eql(u8, kind, "quit")) {
+    return switch (kind orelse return error.InvalidCommand) {
+        .@"key-feedback" => .{ .feedback = try intent.string(state, table, "message") },
+        .quit => .quit,
+        .save => .save,
+        .reload => .reload,
+        .minibuffer => .{
+            .minibuffer = std.meta.stringToEnum(
+                Minibuffer.Context,
+                try intent.string(state, table, "context"),
+            ) orelse return error.InvalidCommand,
+        },
+        .presentation => .{ .presentation = try intent.string(state, table, "name") },
+        .replace, .move, .undo, .redo => |edit_kind| .{
+            .edit = try intent.edit(state, table, edit_kind, before),
+        },
+    };
+}
+
+fn perform(self: *Editor, focus: Focus, action: Action, before: intent.Origins) !?Submission {
+    if (action != .feedback and action != .quit) self.report("");
+    switch (action) {
+        .feedback => |message| self.report(message),
         // Detachment is safe even when dirty: authoritative documents outlive this terminal.
-        self.quit = true;
-        return null;
+        .quit => self.quit = true,
+        .save => {
+            if (self.connection.current().path == null) return error.PathRequired;
+            self.connection.save(.{}) catch |err| return self.hostFailure(err);
+            self.report("Saved");
+        },
+        .reload => self.reload_requested = true,
+        .minibuffer => |context| try self.openMinibuffer(context),
+        .presentation => |name| try self.setPreset(name),
+        .edit => |edit| return try self.submit(focus, edit, before.buffer),
     }
-    self.report("");
-    if (std.mem.eql(u8, kind, "save")) {
-        if (target.path() == null) return error.PathRequired;
-        switch (target) {
-            .local => |value| {
-                try value.document.save(null);
-            },
-            .remote => |value| {
-                try self.rememberViewport();
-                try value.client.save(.{});
-                self.afterBufferChange();
-            },
-        }
-        self.report("Saved");
-        return null;
-    }
-    if (std.mem.eql(u8, kind, "reload")) {
-        self.reload_requested = true;
-        return null;
-    }
-    if (std.mem.eql(u8, kind, "minibuffer")) {
-        const context = try self.fieldString(intent_index, "context");
-        const input_context = std.meta.stringToEnum(Minibuffer.Context, context) orelse
-            return error.InvalidCommand;
-        try self.openMinibuffer(input_context);
-        return null;
-    }
-    if (std.mem.eql(u8, kind, "presentation")) {
-        try self.setPreset(try self.fieldString(intent_index, "name"));
-        return null;
-    }
-    const edit = try self.commandEdit(intent_index, kind, .{
-        .buffer = target.bufferId(),
-        .revision = revision,
-        .interaction_revision = interaction_revision,
-    });
-    var result = try target.submit(self.allocator, edit);
+    return null;
+}
+
+fn submit(self: *Editor, focus: Focus, edit: protocol.Edit, buffer: u32) !Submission {
+    var result = switch (focus) {
+        .document => self.connection.submit(self.allocator, buffer, edit) catch |err|
+            return self.hostFailure(err),
+        .minibuffer => try self.minibuffer.submit(self.allocator, edit),
+    };
     errdefer result.deinit(self.allocator);
     // Pin the observation before an observer can switch buffers or issue another command.
+    const after = try self.origins(focus);
     switch (result) {
         .edit_event => |*event| {
-            event.buffer_id = target.bufferId();
-            event.interaction_revision = try target.interactionRevision();
+            event.buffer_id = after.buffer;
+            event.interaction_revision = after.interaction_revision;
         },
         .interaction_result => |*event| {
-            event.buffer_id = target.bufferId();
-            event.document_revision = target.revision();
+            event.buffer_id = after.buffer;
+            event.document_revision = after.revision;
         },
         .validation_report => {},
     }
-    try self.observe(target, result);
+    try self.notifyResult(focus, result, after);
     return result;
 }
 
-// Parses the returned Lua table without restamping explicitly captured observation origins.
-fn commandEdit(self: *Editor, intent_index: c_int, kind: []const u8, defaults: struct {
-    buffer: u32,
-    revision: u32,
-    interaction_revision: u32,
-}) !protocol.Edit {
-    const state = self.state;
-    if (try self.optionalNumber(intent_index, "buffer_id")) |id| {
-        if (id != defaults.buffer) return error.BufferChanged;
-    }
-    const edit_kind = std.meta.stringToEnum(@FieldType(protocol.Edit, "kind"), kind) orelse
-        return error.InvalidCommand;
-    var edit: protocol.Edit = .{
-        .kind = edit_kind,
-        .origin = (try self.optionalNumber(intent_index, "origin")) orelse defaults.revision,
-        .interaction_origin = (try self.optionalNumber(intent_index, "interaction_origin")) orelse
-            defaults.interaction_revision,
-        .source = try self.fieldString(intent_index, "source"),
-    };
-    switch (edit.kind) {
-        .replace => {
-            edit.start = try self.fieldNumber(intent_index, "start");
-            edit.finish = try self.fieldNumber(intent_index, "finish");
-            edit.text = try self.fieldString(intent_index, "text");
-            if (!std.unicode.utf8ValidateSlice(edit.text)) return error.InvalidUtf8;
-        },
-        .move => {
-            edit.position = try self.fieldNumber(intent_index, "position");
-            try self.pushIntentField(intent_index, "mark");
-            const has_mark = lua.lua_type(state, -1) != lua.LUA_TNIL;
-            lua.lua_settop(state, -2);
-            if (has_mark) edit.mark = try self.fieldNumber(intent_index, "mark");
-        },
-        .undo, .redo => {},
-    }
-    return edit;
+// Shows the host's reason for a rejection; other errors are reported by the caller.
+fn hostFailure(self: *Editor, err: anytype) @TypeOf(err) {
+    if (err == error.ServerRejected) self.report(self.connection.errorMessage());
+    return err;
 }
 
 // Result visibility is shared by built-ins and extensions. Observer failures do not undo an edit.
-fn observe(self: *Editor, target: Target, result: Submission) !void {
+fn notifyResult(self: *Editor, focus: Focus, result: Submission, after: intent.Origins) !void {
     const state = self.state;
     const top = lua.lua_gettop(state);
     defer lua.lua_settop(state, top);
     lua.lua_getfield(state, lua.LUA_GLOBALSINDEX, "editor");
     lua.lua_getfield(state, -1, "on_result");
-    if (lua.lua_type(state, -1) == lua.LUA_TFUNCTION) {
-        lua.lua_createtable(state, 0, 8);
-        string(state, @tagName(result));
-        lua.lua_setfield(state, -2, "kind");
-        string(state, if (target.isMain(self.document)) "document" else "minibuffer");
-        lua.lua_setfield(state, -2, "surface");
-        number(state, "buffer_id", target.bufferId());
-        number(state, "revision", target.revision());
-        number(state, "interaction_revision", try target.interactionRevision());
-        switch (result) {
-            .edit_event => |event| {
-                number(state, "old_revision", event.old_revision);
-                number(state, "new_revision", event.new_revision);
-                string(state, event.source);
-                lua.lua_setfield(state, -2, "source");
-            },
-            .interaction_result => |event| {
-                number(state, "old_revision", event.old_revision);
-                number(state, "new_revision", event.new_revision);
-            },
-            .validation_report => |report_value| {
-                string(state, report_value.message);
-                lua.lua_setfield(state, -2, "message");
-            },
+    if (lua.lua_type(state, -1) != lua.LUA_TFUNCTION) return;
+    lua.lua_createtable(state, 0, 8);
+    string(state, @tagName(result));
+    lua.lua_setfield(state, -2, "kind");
+    string(state, @tagName(focus));
+    lua.lua_setfield(state, -2, "surface");
+    number(state, "buffer_id", after.buffer);
+    number(state, "revision", after.revision);
+    number(state, "interaction_revision", after.interaction_revision);
+    switch (result) {
+        .edit_event => |event| {
+            number(state, "old_revision", event.old_revision);
+            number(state, "new_revision", event.new_revision);
+            string(state, event.source);
+            lua.lua_setfield(state, -2, "source");
+        },
+        .interaction_result => |event| {
+            number(state, "old_revision", event.old_revision);
+            number(state, "new_revision", event.new_revision);
+        },
+        .validation_report => |report_value| {
+            string(state, report_value.message);
+            lua.lua_setfield(state, -2, "message");
+        },
+    }
+    if (self.callLua(1, 0) != 0) self.report("Lua result observer failed (submission already completed)");
+}
+
+/// Opens or selects a file, or creates a scratch buffer for null. Restores a remembered viewport.
+pub fn openFile(self: *Editor, path: ?[]const u8) !void {
+    try self.changeBuffer(.{ .open = path });
+}
+
+pub fn selectBuffer(self: *Editor, id: u32) !void {
+    try self.changeBuffer(.{ .select = id });
+}
+
+/// Killing the selected buffer selects another; its remembered viewport is discarded.
+pub fn killBuffer(self: *Editor, id: u32, discard: bool) !void {
+    try self.changeBuffer(.{ .kill = .{ .id = id, .discard = discard } });
+    for (self.viewports.items, 0..) |view, index| {
+        if (view.buffer == id) {
+            _ = self.viewports.swapRemove(index);
+            break;
         }
-        if (self.callLua(1, 0) != 0) self.report("Lua result observer failed (submission already completed)");
+    }
+}
+
+/// Names the selected buffer; the buffer, and so its viewport, stay selected.
+pub fn saveAs(self: *Editor, path: []const u8) !void {
+    try self.connection.save(.{ .path = path });
+}
+
+pub fn shutdownServer(self: *Editor) !void {
+    try self.connection.shutdown();
+    self.quit = true;
+}
+
+// A rejected change keeps the current selection, and with it the current viewport.
+fn changeBuffer(self: *Editor, change: union(enum) {
+    open: ?[]const u8,
+    select: u32,
+    kill: struct { id: u32, discard: bool },
+}) !void {
+    try self.rememberViewport();
+    switch (change) {
+        .open => |path| try self.connection.open(.{ .path = path }),
+        .select => |id| try self.connection.select(id),
+        .kill => |kill| try self.connection.kill(kill.id, kill.discard),
+    }
+    const id = self.connection.current().buffer;
+    self.viewport.top = 0;
+    self.viewport.left = 0;
+    for (self.viewports.items) |view| {
+        if (view.buffer == id) {
+            self.viewport.top = view.top;
+            self.viewport.left = view.left;
+            break;
+        }
     }
 }
 
 fn rememberViewport(self: *Editor) !void {
-    const id = self.mainTarget().bufferId();
+    const id = self.connection.current().buffer;
     for (self.viewports.items) |*view| {
         if (view.buffer == id) {
             view.top = self.viewport.top;
@@ -653,56 +566,4 @@ fn rememberViewport(self: *Editor) !void {
         .top = self.viewport.top,
         .left = self.viewport.left,
     });
-}
-
-fn afterBufferChange(self: *Editor) void {
-    const host = self.remote orelse return;
-    const state = host.current();
-    self.cursor = .{ .value = state.cursor_anchor };
-    self.session = state.session;
-    self.viewport.top = 0;
-    self.viewport.left = 0;
-    for (self.viewports.items) |view| {
-        if (view.buffer == state.buffer) {
-            self.viewport.top = view.top;
-            self.viewport.left = view.left;
-            break;
-        }
-    }
-    self.syntax.deinit();
-    self.syntax = Syntax.init(self.allocator, state.path);
-}
-
-pub fn openFile(self: *Editor, path: ?[]const u8) !void {
-    const host = self.remote orelse return error.ServerRequired;
-    try self.rememberViewport();
-    try host.open(.{ .path = path });
-    self.afterBufferChange();
-}
-
-pub fn selectBuffer(self: *Editor, id: u32) !void {
-    const host = self.remote orelse return error.ServerRequired;
-    try self.rememberViewport();
-    try host.select(id);
-    self.afterBufferChange();
-}
-
-pub fn killBuffer(self: *Editor, id: u32, discard: bool) !void {
-    const host = self.remote orelse return error.ServerRequired;
-    try self.rememberViewport();
-    try host.kill(id, discard);
-    self.afterBufferChange();
-}
-
-pub fn saveAs(self: *Editor, path: []const u8) !void {
-    const host = self.remote orelse return error.ServerRequired;
-    try self.rememberViewport();
-    try host.save(.{ .path = path });
-    self.afterBufferChange();
-}
-
-pub fn shutdownServer(self: *Editor) !void {
-    const host = self.remote orelse return error.ServerRequired;
-    try host.shutdown();
-    self.quit = true;
 }

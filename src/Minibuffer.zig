@@ -2,7 +2,9 @@
 //! strings.
 const std = @import("std");
 const litura = @import("litura");
-const editing = @import("editing.zig");
+const protocol = @import("protocol.zig");
+const local = @import("local_document.zig");
+const submission = @import("submission.zig");
 const Minibuffer = @This();
 
 allocator: std.mem.Allocator,
@@ -20,8 +22,12 @@ candidates: std.ArrayListUnmanaged([]u8) = .empty,
 candidate_index: ?usize = null,
 history_index: ?usize = null,
 draft: ?[]u8 = null,
+/// Backs the latest observe result; reset by the next observe.
+view_arena: std.heap.ArenaAllocator,
 
 pub const Context = enum { command, lua, prompt };
+/// One rendered input line. View strings borrow the minibuffer until the next observe or deinit.
+pub const Observation = struct { view: protocol.View, cursor: u32, mark: ?u32 };
 pub const history_count_max = 50;
 pub const output_count_max = 8;
 pub const output_bytes_max = 4096;
@@ -35,7 +41,13 @@ pub fn init(allocator: std.mem.Allocator) !Minibuffer {
     errdefer document.deinit();
     const cursor = try document.createAnchor(0, .sticky);
     const session = try document.createSession(&.{cursor});
-    return .{ .allocator = allocator, .document = document, .cursor = cursor, .session = session };
+    return .{
+        .allocator = allocator,
+        .document = document,
+        .cursor = cursor,
+        .session = session,
+        .view_arena = .init(allocator),
+    };
 }
 
 pub fn deinit(self: *Minibuffer) void {
@@ -50,16 +62,50 @@ pub fn deinit(self: *Minibuffer) void {
     for (self.output.items) |item| self.allocator.free(item);
     self.output.deinit(self.allocator);
     self.document.deinit();
+    self.view_arena.deinit();
     self.* = undefined;
 }
 
-pub fn target(self: *Minibuffer) editing.Target {
+fn target(self: *Minibuffer) local.Target {
+    return .{ .document = &self.document, .cursor = self.cursor, .session = self.session };
+}
+
+pub fn position(self: *Minibuffer) !u32 {
+    return self.target().position();
+}
+
+/// Command context for Lua. Only selection is allocated through allocator; other strings are
+/// static.
+pub fn snapshot(self: *Minibuffer, allocator: std.mem.Allocator) !protocol.Snapshot {
+    return local.snapshot(allocator, self.target(), .{
+        .id = 0,
+        .name = "[scratch]",
+        .path = null,
+        .revision = self.document.revision,
+        .dirty = self.document.dirty(),
+    });
+}
+
+/// Submits through the shared Litura adapter; returns a summary owned through allocator.
+pub fn submit(self: *Minibuffer, allocator: std.mem.Allocator, edit: protocol.Edit) !submission.Result {
+    var result = try local.submit(self.target(), edit);
+    defer result.deinit(self.document.allocator);
+    return submission.copy(allocator, local.event(result));
+}
+
+/// Observes the cursor's line for rendering, with the same view shape as a hosted document.
+pub fn observe(self: *Minibuffer) !Observation {
+    _ = self.view_arena.reset(.retain_capacity);
+    const cursor = try self.position();
+    const line = (try self.document.positionToLineCol(cursor)).line;
     return .{
-        .local = .{
-            .document = &self.document,
-            .cursor = self.cursor,
-            .session = self.session,
-        },
+        .view = try local.view(self.view_arena.allocator(), &self.document, .{
+            .buffer = 0,
+            .first_line = line,
+            .line_count = 1,
+        }),
+        .cursor = cursor,
+        .mark = try self.target().mark(),
     };
 }
 
@@ -73,7 +119,7 @@ pub fn historyNamespace(self: *const Minibuffer) []const u8 {
 
 /// Replaces input through Litura's revision-aware public submission path; no direct anchor writes.
 pub fn setText(self: *Minibuffer, text: []const u8) !void {
-    var result = try self.target().submit(self.allocator, .{
+    var result = try self.submit(self.allocator, .{
         .kind = .replace,
         .origin = self.document.revision,
         .interaction_origin = try self.document.interactionRevision(self.session),

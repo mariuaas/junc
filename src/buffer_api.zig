@@ -29,8 +29,8 @@ fn id(state: *lua.lua_State, index: c_int) !u32 {
     return @intFromFloat(value);
 }
 fn failureMessage(editor: *Editor, fallback: []const u8) []const u8 {
-    if (editor.remote) |remote| if (remote.errorMessage().len > 0) return remote.errorMessage();
-    return fallback;
+    const message = editor.connection.errorMessage();
+    return if (message.len > 0) message else fallback;
 }
 fn explicit(state: *lua.lua_State) bool {
     return host(state).runtime_depth != 0;
@@ -39,8 +39,7 @@ fn explicit(state: *lua.lua_State) bool {
 fn listCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
     const state = maybe_state.?;
     const editor = host(state);
-    const remote = editor.remote orelse return fail(state, "ServerRequired");
-    const response = remote.call(.{ .id = 0, .op = .list }) catch |err|
+    const response = editor.connection.call(.{ .id = 0, .op = .list }) catch |err|
         return fail(state, failureMessage(editor, @errorName(err)));
     defer response.deinit();
     lua.lua_createtable(state, 0, 0);
@@ -67,7 +66,7 @@ fn openCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
     const path = text(state, 1) catch |err| return fail(state, @errorName(err));
     editor.openFile(if (path.len == 0) null else path) catch |err|
         return fail(state, failureMessage(editor, @errorName(err)));
-    lua.lua_pushinteger(state, editor.mainTarget().bufferId());
+    lua.lua_pushinteger(state, editor.connection.current().buffer);
     return 1;
 }
 fn selectCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {

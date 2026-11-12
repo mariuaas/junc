@@ -1,4 +1,4 @@
-//! Borrowed document/session target shared by the main surface and minibuffer.
+//! Litura submission and observation adapter shared by hosted buffers and the client minibuffer.
 const std = @import("std");
 const litura = @import("litura");
 const protocol = @import("protocol.zig");
@@ -61,6 +61,53 @@ pub fn snapshot(
         .first = first,
         .last = last,
         .selection = try allocator.dupe(u8, selection),
+    };
+}
+
+/// Copies lines [first_line, first_line + line_count) into arena as one immutable view, clamped
+/// to the document. Tokens are left empty; a host with a syntax cache fills them in. Rejects an
+/// empty range or a first line past the end with InvalidRange.
+pub fn view(
+    arena: std.mem.Allocator,
+    document: *litura.BufferEngine,
+    options: struct { buffer: u32, first_line: u32, line_count: u16 },
+) !protocol.View {
+    if (options.line_count == 0 or options.first_line >= document.lineCount()) return error.InvalidRange;
+    const line_count = @min(options.line_count, document.lineCount() - options.first_line);
+    const lines = try arena.alloc(protocol.Line, line_count);
+    for (lines, 0..) |*line, index| {
+        const number = options.first_line + @as(u32, @intCast(index));
+        line.* = .{
+            .start = try document.lineStart(number),
+            .end = try document.lineEnd(number, false),
+            .end_with_newline = try document.lineEnd(number, true),
+        };
+    }
+    const start = lines[0].start;
+    const end = lines[lines.len - 1].end_with_newline;
+    const text = try document.getTextRange(start, end);
+    defer document.allocator.free(text);
+    // Byte offsets of each grapheme within text; boundaries[i] starts grapheme start + i.
+    const boundaries = try arena.alloc(u32, end - start + 1);
+    var iterator = try document.graphemeCursor(start);
+    var offset: u32 = 0;
+    boundaries[0] = 0;
+    while (iterator.position < end) {
+        offset += @intCast((try iterator.current()).len);
+        boundaries[iterator.position - start + 1] = offset;
+        if (!iterator.advance()) break;
+    }
+    return .{
+        .buffer = options.buffer,
+        .revision = document.revision,
+        .first_line = options.first_line,
+        .lines = lines,
+        .start = start,
+        .end = end,
+        .text = try arena.dupe(u8, text),
+        .boundaries = boundaries,
+        .tokens = &.{},
+        .syntax_state = .plain,
     };
 }
 

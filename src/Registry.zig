@@ -74,12 +74,6 @@ pub fn open(self: *Registry, options: struct { path: ?[]const u8 = null }) !*Buf
             }
         }
     }
-    if (self.next_id == std.math.maxInt(u32)) return error.BufferIdsExhausted;
-    const name = if (canonical) |value|
-        try self.allocator.dupe(u8, std.fs.path.basename(value))
-    else
-        try std.fmt.allocPrint(self.allocator, "*scratch-{d}*", .{self.next_id});
-    errdefer self.allocator.free(name);
     if (canonical) |value| try paths.ordinaryFile(self.allocator, value);
     const io = std.Io.Threaded.global_single_threaded.io();
     const text = if (canonical) |value|
@@ -95,7 +89,32 @@ pub fn open(self: *Registry, options: struct { path: ?[]const u8 = null }) !*Buf
     else
         try self.allocator.dupe(u8, "");
     defer self.allocator.free(text);
+    return self.insert(canonical, text);
+}
+
+/// Creates a buffer holding text without reading the file system, for in-process hosts. A path is
+/// canonicalized for identity and syntax detection; an identity already present is PathInUse.
+/// The new buffer is clean at revision 0 and belongs to the registry until kill/deinit.
+pub fn create(self: *Registry, options: struct { path: ?[]const u8 = null, text: []const u8 }) !*Buffer {
+    const canonical = if (options.path) |value| try paths.canonical(self.allocator, value) else null;
+    errdefer if (canonical) |value| self.allocator.free(value);
+    if (canonical) |value| {
+        for (self.buffers.items) |buffer| {
+            if (buffer.path) |existing| if (std.mem.eql(u8, existing, value)) return error.PathInUse;
+        }
+    }
+    return self.insert(canonical, options.text);
+}
+
+// Takes ownership of canonical only on success; text is copied into the new document.
+fn insert(self: *Registry, canonical: ?[]u8, text: []const u8) !*Buffer {
+    if (self.next_id == std.math.maxInt(u32)) return error.BufferIdsExhausted;
     if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
+    const name = if (canonical) |value|
+        try self.allocator.dupe(u8, std.fs.path.basename(value))
+    else
+        try std.fmt.allocPrint(self.allocator, "*scratch-{d}*", .{self.next_id});
+    errdefer self.allocator.free(name);
     const buffer = try self.allocator.create(Buffer);
     errdefer self.allocator.destroy(buffer);
     buffer.* = .{
@@ -158,52 +177,24 @@ pub fn save(self: *Registry, id: u32, path: ?[]const u8) !void {
     buffer.name = name;
 }
 
-/// Produces an immutable, revision-stamped view using Litura's grapheme cursor and token provider.
+/// Produces an immutable, revision-stamped view with this buffer's syntax tokens.
 /// All returned slices belong to the caller's arena; text and offsets are observations, not a
 /// replica.
 pub fn view(self: *Registry, arena: std.mem.Allocator, request: protocol.Request) !protocol.View {
     const buffer = try self.get(request.buffer);
     const document = &buffer.document;
     if (request.revision != document.revision) return error.StaleRevision;
-    if (request.line_count == 0 or request.first_line >= document.lineCount()) return error.InvalidRange;
-    const line_count = @min(request.line_count, document.lineCount() - request.first_line);
-    const lines = try arena.alloc(protocol.Line, line_count);
-    for (lines, 0..) |*line, index| {
-        const number = request.first_line + @as(u32, @intCast(index));
-        line.* = .{
-            .start = try document.lineStart(number),
-            .end = try document.lineEnd(number, false),
-            .end_with_newline = try document.lineEnd(number, true),
-        };
-    }
-    const start = lines[0].start;
-    const end = lines[lines.len - 1].end_with_newline;
-    const text = try document.getTextRange(start, end);
-    defer self.allocator.free(text);
-    const boundaries = try arena.alloc(u32, end - start + 1);
-    var iterator = try document.graphemeCursor(start);
-    var offset: u32 = 0;
-    boundaries[0] = 0;
-    while (iterator.position < end) {
-        offset += @intCast((try iterator.current()).len);
-        boundaries[iterator.position - start + 1] = offset;
-        if (!iterator.advance()) break;
-    }
-    buffer.syntax.update(document, .{ .start = start, .end = end }) catch |err| {
+    var result = try local.view(arena, document, .{
+        .buffer = buffer.id,
+        .first_line = request.first_line,
+        .line_count = request.line_count,
+    });
+    buffer.syntax.update(document, .{ .start = result.start, .end = result.end }) catch |err| {
         std.log.scoped(.server).warn("syntax unavailable: {s}", .{@errorName(err)});
     };
-    return .{
-        .buffer = buffer.id,
-        .revision = document.revision,
-        .first_line = request.first_line,
-        .lines = lines,
-        .start = start,
-        .end = end,
-        .text = try arena.dupe(u8, text),
-        .boundaries = boundaries,
-        .tokens = try arena.dupe(Syntax.Span, buffer.syntax.spans),
-        .syntax_state = buffer.syntax.state,
-    };
+    result.tokens = try arena.dupe(Syntax.Span, buffer.syntax.spans);
+    result.syntax_state = buffer.syntax.state;
+    return result;
 }
 
 /// Owns this attachment's per-buffer interaction sessions. Drop them on detach, not on switching.

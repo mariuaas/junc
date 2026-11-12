@@ -1,8 +1,10 @@
 const std = @import("std");
 const junc = @import("junc");
+const Fixture = @import("Fixture.zig");
 test "ordinary typing and a separately loaded extension share observable submission results" {
-    var editor = try junc.Editor.init(std.testing.allocator, "", null);
-    defer editor.deinit();
+    const fixture = try Fixture.create(std.testing.allocator, "", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
     var ordinary = (try editor.dispatch("text", "abc")).?;
     defer ordinary.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u32, 1), ordinary.edit_event.new_revision);
@@ -12,14 +14,15 @@ test "ordinary typing and a separately loaded extension share observable submiss
     var extension = (try editor.dispatch("ctrl-w", "")).?;
     defer extension.deinit(std.testing.allocator);
     try std.testing.expectEqual(ordinary.edit_event.new_revision, extension.edit_event.old_revision);
-    const text = try editor.document.?.getText();
+    const text = try fixture.document().getText();
     defer std.testing.allocator.free(text);
     try std.testing.expectEqualStrings("(abc)", text);
-    try std.testing.expectEqual(@as(u32, 5), try editor.position());
+    try std.testing.expectEqual(@as(u32, 5), editor.position());
 }
 test "reload preserves document and history and failed reload preserves commands" {
-    var editor = try junc.Editor.init(std.testing.allocator, "hello", null);
-    defer editor.deinit();
+    const fixture = try Fixture.create(std.testing.allocator, "hello", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
     const state = editor.state;
     try std.testing.expectError(error.LuaError, editor.reload("this is not Lua"));
     try std.testing.expectEqual(state, editor.state);
@@ -29,13 +32,14 @@ test "reload preserves document and history and failed reload preserves commands
     try editor.reload(null);
     var undo = (try editor.dispatch("ctrl-z", "")).?;
     defer undo.deinit(std.testing.allocator);
-    const text = try editor.document.?.getText();
+    const text = try fixture.document().getText();
     defer std.testing.allocator.free(text);
     try std.testing.expectEqualStrings("hello", text);
 }
 test "grapheme navigation and deletion preserve Unicode clusters" {
-    var editor = try junc.Editor.init(std.testing.allocator, "", null);
-    defer editor.deinit();
+    const fixture = try Fixture.create(std.testing.allocator, "", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
     for ([_][2][]const u8{ .{
         "text",
         "界é👩‍💻",
@@ -55,13 +59,14 @@ test "grapheme navigation and deletion preserve Unicode clusters" {
         var result = (try editor.dispatch(input[0], input[1])).?;
         result.deinit(std.testing.allocator);
     }
-    const text = try editor.document.?.getText();
+    const text = try fixture.document().getText();
     defer std.testing.allocator.free(text);
     try std.testing.expectEqualStrings("界\n", text);
 }
 test "built-in and equivalent extension receive the same revision and result API in Lua" {
-    var editor = try junc.Editor.init(std.testing.allocator, "", null);
-    defer editor.deinit();
+    const fixture = try Fixture.create(std.testing.allocator, "", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
     try editor.reload(
         \\return function(e)
         \\  e.command('equivalent', function(c,t)
@@ -84,44 +89,47 @@ test "built-in and equivalent extension receive the same revision and result API
     var extension = (try editor.dispatch("extension-key", "a")).?;
     defer extension.deinit(std.testing.allocator);
     _ = try editor.dispatch("verify", "");
-    const text = try editor.document.?.getText();
+    const text = try fixture.document().getText();
     defer std.testing.allocator.free(text);
     try std.testing.expectEqualStrings("aa", text);
 }
 
 test "invalid extension intents and malformed values preserve document state" {
-    var editor = try junc.Editor.init(std.testing.allocator, "abc", null);
-    defer editor.deinit();
+    const fixture = try Fixture.create(std.testing.allocator, "abc", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
     try editor.reload("return function(e) e.command('insert', function() return {kind='move',position=999} end) end");
     var result = (try editor.dispatch("text", "a")).?;
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(result == .validation_report);
-    try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
-    try std.testing.expectEqual(@as(u32, 0), try editor.position());
+    try std.testing.expectEqual(@as(u32, 0), fixture.document().revision);
+    try std.testing.expectEqual(@as(u32, 0), editor.position());
     try editor.reload("return function(e) e.command('insert', function() return {kind='move',position=0/0} end) end");
     try std.testing.expectError(error.InvalidCommand, editor.dispatch("text", "a"));
 }
 
 test "stale interaction submissions are rejected through Litura public API" {
-    var editor = try junc.Editor.init(std.testing.allocator, "abc", null);
-    defer editor.deinit();
-    const origin = try editor.document.?.interactionRevision(editor.session);
+    const fixture = try Fixture.create(std.testing.allocator, "abc", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
+    const origin = try fixture.document().interactionRevision(fixture.session());
     var move = (try editor.dispatch("right", "")).?;
     defer move.deinit(std.testing.allocator);
-    var stale = try editor.document.?.submit(.{ .payload = .{ .interaction_mutation = .{
-        .session_id = editor.session,
+    var stale = try fixture.document().submit(.{ .payload = .{ .interaction_mutation = .{
+        .session_id = fixture.session(),
         .origin = origin,
-        .ops = &.{.{ .move_cursor_anchor = .{ .cursor = editor.cursor, .position = 3 } }},
-    } }, .origin = editor.document.?.revision });
+        .ops = &.{.{ .move_cursor_anchor = .{ .cursor = fixture.cursor(), .position = 3 } }},
+    } }, .origin = fixture.document().revision });
     defer stale.deinit(std.testing.allocator);
     try std.testing.expect(stale == .validation_report);
-    try std.testing.expectEqual(@as(u32, 1), try editor.position());
+    try std.testing.expectEqual(@as(u32, 1), editor.position());
 }
 
 test "computed intent strings survive Lua collection while later fields are decoded" {
     // A metatable computes source, then text triggers collection and same-sized string allocations.
-    var editor = try junc.Editor.init(std.testing.allocator, "", null);
-    defer editor.deinit();
+    const fixture = try Fixture.create(std.testing.allocator, "", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
     try editor.reload(
         \\return function(e)
         \\  e.command('insert', function(c)
@@ -148,12 +156,13 @@ test "computed intent strings survive Lua collection while later fields are deco
     defer result.deinit(std.testing.allocator);
     const expected = "source-" ** 64;
     try std.testing.expectEqualStrings(expected, result.edit_event.source);
-    try expectText(&editor, "X");
+    try fixture.expectText("X");
 }
 
 test "computed intent field errors preserve the document and leave the command usable" {
-    var editor = try junc.Editor.init(std.testing.allocator, "safe", null);
-    defer editor.deinit();
+    const fixture = try Fixture.create(std.testing.allocator, "safe", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
     try editor.reload(
         \\return function(e)
         \\  local failed=false
@@ -171,66 +180,63 @@ test "computed intent field errors preserve the document and leave the command u
     );
     try std.testing.expectError(error.LuaError, editor.dispatch("text", "ignored"));
     try std.testing.expect(std.mem.indexOf(u8, editor.status(), "computed field failed") != null);
-    try std.testing.expectEqual(@as(u32, 0), editor.document.?.revision);
-    try expectText(&editor, "safe");
+    try std.testing.expectEqual(@as(u32, 0), fixture.document().revision);
+    try fixture.expectText("safe");
     var result = (try editor.dispatch("text", "ignored")).?;
     defer result.deinit(std.testing.allocator);
-    try expectText(&editor, "Xsafe");
+    try fixture.expectText("Xsafe");
 }
 test "separate combining input preserves grapheme cursor deletion and undo" {
-    var editor = try junc.Editor.init(std.testing.allocator, "", null);
-    defer editor.deinit();
+    const fixture = try Fixture.create(std.testing.allocator, "", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
     for ([_][]const u8{ "e", "́" }) |input| {
         var result = (try editor.dispatch("text", input)).?;
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(result == .edit_event);
-        try std.testing.expectEqual(@as(u32, 1), editor.document.?.graphemeCount());
-        try std.testing.expectEqual(@as(u32, 1), try editor.position());
+        try std.testing.expectEqual(@as(u32, 1), fixture.document().graphemeCount());
+        try std.testing.expectEqual(@as(u32, 1), editor.position());
     }
     var erase = (try editor.dispatch("backspace", "")).?;
     defer erase.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(u32, 0), editor.document.?.graphemeCount());
+    try std.testing.expectEqual(@as(u32, 0), fixture.document().graphemeCount());
     var undo_delete = (try editor.dispatch("ctrl-z", "")).?;
     defer undo_delete.deinit(std.testing.allocator);
-    try expectText(&editor, "é");
+    try fixture.expectText("é");
     var undo_accent = (try editor.dispatch("ctrl-z", "")).?;
     defer undo_accent.deinit(std.testing.allocator);
-    try expectText(&editor, "e");
+    try fixture.expectText("e");
     var redo_accent = (try editor.dispatch("ctrl-y", "")).?;
     defer redo_accent.deinit(std.testing.allocator);
-    try expectText(&editor, "é");
-    try std.testing.expectEqual(@as(u32, 1), editor.document.?.graphemeCount());
-    try std.testing.expectEqual(@as(u32, 1), try editor.position());
-}
-
-fn expectText(editor: *junc.Editor, expected: []const u8) !void {
-    const text = try editor.document.?.getText();
-    defer std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings(expected, text);
+    try fixture.expectText("é");
+    try std.testing.expectEqual(@as(u32, 1), fixture.document().graphemeCount());
+    try std.testing.expectEqual(@as(u32, 1), editor.position());
 }
 
 test "replacement cursor projects inside a splice containing right context" {
-    var editor = try junc.Editor.init(std.testing.allocator, "🇳🇴🇸🇪", null);
-    defer editor.deinit();
+    const fixture = try Fixture.create(std.testing.allocator, "🇳🇴🇸🇪", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
     var insert = (try editor.dispatch("text", "🇦")).?;
     defer insert.deinit(std.testing.allocator);
     try std.testing.expect(insert == .edit_event);
-    try std.testing.expectEqual(@as(u32, 3), editor.document.?.graphemeCount());
-    try std.testing.expectEqual(@as(u32, 1), try editor.position());
-    try expectText(&editor, "🇦🇳🇴🇸🇪");
+    try std.testing.expectEqual(@as(u32, 3), fixture.document().graphemeCount());
+    try std.testing.expectEqual(@as(u32, 1), editor.position());
+    try fixture.expectText("🇦🇳🇴🇸🇪");
 }
 
 test "deleting a separator collapses the cursor onto the joined cluster" {
-    var editor = try junc.Editor.init(std.testing.allocator, "e\ń", null);
-    defer editor.deinit();
+    const fixture = try Fixture.create(std.testing.allocator, "e\ń", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
     for ([_][]const u8{ "right", "right", "backspace" }) |key| {
         var result = (try editor.dispatch(key, "")).?;
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(result != .validation_report);
     }
-    try expectText(&editor, "é");
-    try std.testing.expectEqual(@as(u32, 1), editor.document.?.graphemeCount());
-    try std.testing.expectEqual(@as(u32, 1), try editor.position());
+    try fixture.expectText("é");
+    try std.testing.expectEqual(@as(u32, 1), fixture.document().graphemeCount());
+    try std.testing.expectEqual(@as(u32, 1), editor.position());
 }
 
 comptime {
@@ -239,4 +245,5 @@ comptime {
     _ = @import("minibuffer_test.zig");
     _ = @import("keymap_test.zig");
     _ = @import("server_test.zig");
+    _ = @import("viewport_test.zig");
 }

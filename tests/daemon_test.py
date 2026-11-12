@@ -9,7 +9,8 @@ import struct
 import subprocess
 import tempfile
 import time
-from daemon_support import Connection, DaemonRuntime
+import threading
+from daemon_support import PROTOCOL_VERSION, Connection, DaemonRuntime
 
 binary = Path(__file__).resolve().parents[1] / 'zig-out/bin/junc'
 
@@ -110,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix='junc-files-') as directory, DaemonRunti
     result = okay(owner.call('kill', buffer=state2['buffer'], discard=True))
     assert all(item['id'] != state2['buffer'] for item in okay(owner.call('list'))['buffers'])
     # Each attachment enforces monotonically increasing ids; a duplicate gets an error then detaches.
-    bad = dict(version=2, id=owner.next_id-1, op='list')
+    bad = dict(version=PROTOCOL_VERSION, id=owner.next_id-1, op='list')
     frame = json.dumps(bad).encode()
     owner.socket.sendall(struct.pack('<I', len(frame)) + frame)
     response = owner.reply(bad['id'])
@@ -164,4 +165,54 @@ for symlink in (False, True):
         assert b'UnsafeSocket' in error, error
         assert (target if symlink else path).read_text() == 'keep'
 
-print('Daemon integration passed: auto-spawn/racing launches, cwd/process independence, multiple attachments, private/stale sockets, canonical buffers/scratch, sessions/Unicode/history, dirty retention, save/kill, framing/order and clean shutdown')
+def frame(message):
+    data = json.dumps(message).encode()
+    return struct.pack('<I', len(data)) + data
+
+def receive(connection):
+    size = struct.unpack('<I', connection.recv(4, socket.MSG_WAITALL))[0]
+    return json.loads(connection.recv(size, socket.MSG_WAITALL))
+
+# Version mismatches fail explicitly in both directions, before either side decodes the rest.
+with tempfile.TemporaryDirectory(prefix='junc-files-') as directory, DaemonRuntime() as daemon:
+    wait(launch(daemon, directory, 'new.txt'))
+    owner = Connection(daemon.directory)
+    older = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    older.settimeout(5)
+    older.connect(str(daemon.directory / 'session.sock'))
+    older.sendall(frame(dict(version=PROTOCOL_VERSION - 1, id=1, op='hello', field_from_another_version=True)))
+    response = receive(older)
+    assert response['version'] == PROTOCOL_VERSION and response['id'] == 1, response
+    assert response['failure']['code'] == 'UnsupportedVersion', response
+    assert f'sent {PROTOCOL_VERSION - 1}' in response['failure']['message'], response
+    assert older.recv(1) == b'', 'an incompatible client stayed attached'
+    older.close()
+    okay(owner.call('shutdown'))
+    owner.close()
+
+with tempfile.TemporaryDirectory(prefix='junc-files-') as directory, DaemonRuntime() as daemon:
+    # A stand-in for a server from another junc version, answering the client's hello.
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(daemon.directory / 'session.sock'))
+    (daemon.directory / 'session.sock').chmod(0o600)
+    listener.listen(1)
+    listener.settimeout(10)
+    requests = []
+    def answer():
+        connection, _ = listener.accept()
+        with connection:
+            requests.append(receive(connection))
+            connection.sendall(frame(dict(version=PROTOCOL_VERSION + 1, id=1, shape_from_another_version=[])))
+            connection.recv(1)
+    server = threading.Thread(target=answer)
+    server.start()
+    error = wait(launch(daemon, directory, 'new.txt'))
+    server.join(10)
+    listener.close()
+    assert requests and requests[0]['version'] == PROTOCOL_VERSION and requests[0]['op'] == 'hello', requests
+    assert b'IncompatibleServer' in error, error
+    message = f'speaks hosting protocol {PROTOCOL_VERSION + 1}, but this client needs {PROTOCOL_VERSION}'
+    assert message.encode() in error, error
+    assert b'shutdown-server' in error, error
+
+print('Daemon integration passed: auto-spawn/racing launches, cwd/process independence, multiple attachments, private/stale sockets, canonical buffers/scratch, sessions/Unicode/history, dirty retention, save/kill, framing/order, explicit protocol version mismatches and clean shutdown')

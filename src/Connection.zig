@@ -1,55 +1,64 @@
-//! Owns one local connection and immutable observations, never a main-document engine or text
-//! replica.
+//! A client's attachment to the authoritative host and its immutable observations. Owns no
+//! main-document engine or text replica. The host is a local server socket or, without a daemon,
+//! an in-process host; both answer the same requests, so observation and submission share one path.
 const std = @import("std");
 const c = @import("host_c");
 const paths = @import("paths.zig");
 const wire = @import("wire.zig");
 const protocol = @import("protocol.zig");
 const submission = @import("submission.zig");
-const Remote = @This();
+const InProcessHost = @import("InProcessHost.zig");
+const Connection = @This();
 const log = std.log.scoped(.client);
 
 allocator: std.mem.Allocator,
-fd: c_int,
+transport: Transport,
 next_id: u32 = 1,
 server_pid: i32 = 0,
-attached: bool = false,
 state_frame: ?std.json.Parsed(protocol.Response) = null,
 view_frame: ?std.json.Parsed(protocol.Response) = null,
 view_invalidated: bool = false,
-reader: wire.Reader = .{},
 observed_generation: u64 = 0,
 invalidated_generation: u64 = 0,
 needs_refresh: bool = false,
 message: [512]u8 = @splat(0),
 message_len: usize = 0,
 
+const Transport = union(enum) {
+    /// Owns the descriptor; fd is -1 once the connection is lost.
+    socket: struct { fd: c_int, reader: wire.Reader = .{}, attached: bool = false },
+    /// Borrows a host that outlives this connection. It never sends invalidation hints.
+    in_process: *InProcessHost,
+};
+
 /// Connects to the per-user host, spawning a detached executable under its lifetime lock if absent.
 /// Owns the descriptor and response arenas. The caller must deinit and must not copy the live
-/// value.
+/// value. Call open or select before observing.
 pub fn connect(allocator: std.mem.Allocator, options: struct {
     executable: [:0]const u8,
     runtime_directory: ?[]const u8 = null,
-}) !Remote {
+}) !Connection {
     var runtime = try paths.Runtime.init(allocator, .{ .directory = options.runtime_directory });
     defer runtime.deinit();
     var spawned = false;
     const start = try nowMs();
     while ((try nowMs()) - start < 5000) {
         if (try tryConnect(&runtime)) |fd| {
-            var remote: Remote = .{ .allocator = allocator, .fd = fd };
-            errdefer remote.deinit();
-            const response = remote.call(.{ .id = 0, .op = .hello }) catch |err| {
+            var connection: Connection = .{ .allocator = allocator, .transport = .{ .socket = .{ .fd = fd } } };
+            errdefer connection.deinit();
+            const response = connection.call(.{ .id = 0, .op = .hello }) catch |err| {
                 if (err == error.ConnectionLost) {
-                    remote.deinit();
+                    connection.deinit();
                     continue;
                 }
-                if (err == error.ServerBusy) log.err("{s}", .{remote.errorMessage()});
+                if (err == error.ServerBusy or err == error.IncompatibleServer) {
+                    log.err("{s}", .{connection.errorMessage()});
+                }
                 return err;
             };
             defer response.deinit();
-            remote.attached = true;
-            return remote;
+            connection.transport.socket.attached = true;
+            return connection;
         }
         const lock = try runtime.openLock();
         if (c.flock(lock, c.LOCK_EX | c.LOCK_NB) == 0) {
@@ -132,48 +141,95 @@ fn spawn(executable: [:0]const u8, runtime: *const paths.Runtime, lock: c_int) !
     if (status != 0) return error.ServerForkFailed;
 }
 
-pub fn deinit(self: *Remote) void {
-    if (self.attached and self.fd >= 0) {
-        const response = self.call(.{ .id = 0, .op = .detach }) catch |err| failed: {
-            log.warn("detach acknowledgement unavailable: {s}", .{@errorName(err)});
-            break :failed null;
-        };
-        if (response) |value| value.deinit();
+/// Attaches to an in-process host and selects its initial buffer. The host must outlive the
+/// returned connection, which must not be copied while live.
+pub fn attach(allocator: std.mem.Allocator, host: *InProcessHost) !Connection {
+    var connection: Connection = .{ .allocator = allocator, .transport = .{ .in_process = host } };
+    errdefer connection.deinit();
+    try connection.select(host.initial_buffer);
+    return connection;
+}
+
+pub fn deinit(self: *Connection) void {
+    switch (self.transport) {
+        .socket => |*socket| {
+            if (socket.attached and socket.fd >= 0) {
+                const response = self.call(.{ .id = 0, .op = .detach }) catch |err| failed: {
+                    log.warn("detach acknowledgement unavailable: {s}", .{@errorName(err)});
+                    break :failed null;
+                };
+                if (response) |value| value.deinit();
+            }
+            if (socket.fd >= 0) _ = c.close(socket.fd);
+            socket.reader.deinit(self.allocator);
+        },
+        .in_process => {},
     }
-    if (self.fd >= 0) _ = c.close(self.fd);
-    self.reader.deinit(self.allocator);
     if (self.state_frame) |value| value.deinit();
     if (self.view_frame) |value| value.deinit();
     self.* = undefined;
 }
 
-pub fn errorMessage(self: *const Remote) []const u8 {
+pub fn errorMessage(self: *const Connection) []const u8 {
     return self.message[0..self.message_len];
 }
 
-fn disconnect(self: *Remote) void {
-    if (self.fd >= 0) _ = c.close(self.fd);
-    self.fd = -1;
-    self.attached = false;
+/// False once a socket transport has been lost; an in-process host is always reachable.
+pub fn connected(self: *const Connection) bool {
+    return switch (self.transport) {
+        .socket => |socket| socket.fd >= 0,
+        .in_process => true,
+    };
 }
 
-fn nextFrame(self: *Remote, wait: bool) !?std.json.Parsed(protocol.Response) {
+fn disconnect(self: *Connection) void {
+    const socket = &self.transport.socket;
+    if (socket.fd >= 0) _ = c.close(socket.fd);
+    socket.fd = -1;
+    socket.attached = false;
+}
+
+fn nextFrame(self: *Connection, wait: bool) !?std.json.Parsed(protocol.Response) {
+    const socket = &self.transport.socket;
     const started = try nowMs();
     while (true) {
-        if (try self.reader.next(self.allocator, self.fd)) |bytes| {
+        if (try socket.reader.next(self.allocator, socket.fd)) |bytes| {
             defer self.allocator.free(bytes);
+            try self.checkVersion(bytes);
             return try std.json.parseFromSlice(protocol.Response, self.allocator, bytes, .{
                 .allocate = .alloc_always,
             });
         }
         if (!wait) return null;
         if ((try nowMs()) - started >= 30_000) return error.ResponseTimedOut;
-        var descriptor: c.struct_pollfd = .{ .fd = self.fd, .events = c.POLLIN, .revents = 0 };
+        var descriptor: c.struct_pollfd = .{ .fd = socket.fd, .events = c.POLLIN, .revents = 0 };
         if (c.poll(&descriptor, 1, 100) < 0 and wire.errno() != c.EINTR) return error.SocketPollFailed;
     }
 }
 
-fn notice(self: *Remote, response: protocol.Response) !void {
+// Rejects a frame from a server speaking another protocol version before decoding the rest, whose
+// shape may differ. Records an explanation for the user.
+fn checkVersion(self: *Connection, bytes: []const u8) !void {
+    const envelope = std.json.parseFromSlice(protocol.Envelope, self.allocator, bytes, .{
+        .ignore_unknown_fields = true,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidServerResponse,
+    };
+    defer envelope.deinit();
+    if (envelope.value.version == protocol.version) return;
+    const message = std.fmt.bufPrint(
+        &self.message,
+        "The running junc server speaks hosting protocol {d}, but this client needs {d}. " ++
+            "Stop it with shutdown-server from its own junc executable, then start again.",
+        .{ envelope.value.version, protocol.version },
+    ) catch "The running junc server speaks an incompatible hosting protocol.";
+    if (message.ptr != &self.message) @memcpy(self.message[0..message.len], message);
+    self.message_len = message.len;
+    return error.IncompatibleServer;
+}
+
+fn notice(self: *Connection, response: protocol.Response) !void {
     if (response.version != protocol.version or response.id != 0) return error.InvalidServerResponse;
     const invalidation = response.invalidation orelse return error.InvalidServerResponse;
     if (invalidation.generation <= self.observed_generation) return;
@@ -186,8 +242,9 @@ fn notice(self: *Remote, response: protocol.Response) !void {
 
 /// Consumes only coalescible hosting hints while idle. No document command is synthesized or
 /// retried.
-pub fn pollInvalidations(self: *Remote) !bool {
-    if (self.fd < 0) return error.ConnectionLost;
+pub fn pollInvalidations(self: *Connection) !bool {
+    if (self.transport == .in_process) return self.needs_refresh;
+    if (!self.connected()) return error.ConnectionLost;
     errdefer self.disconnect();
     while (try self.nextFrame(false)) |frame| {
         defer frame.deinit();
@@ -201,57 +258,66 @@ pub fn pollInvalidations(self: *Remote) !bool {
 /// One request/response exchange. Hints can precede a reply; they never replace it or change its
 /// origin.
 /// Once transmitted, a command is never retried, including after a stale-coordinate rejection.
-pub fn call(self: *Remote, request: protocol.Request) !std.json.Parsed(protocol.Response) {
-    if (self.fd < 0) return error.ConnectionLost;
+pub fn call(self: *Connection, request: protocol.Request) !std.json.Parsed(protocol.Response) {
+    if (!self.connected()) return error.ConnectionLost;
     if (self.next_id == std.math.maxInt(u32)) return error.RequestIdsExhausted;
     var outgoing = request;
     outgoing.id = self.next_id;
     self.message_len = 0;
-    wire.sendRequest(self.allocator, self.fd, outgoing) catch |err| {
+    const response = switch (self.transport) {
+        .socket => try self.exchange(outgoing),
+        .in_process => |host| result: {
+            self.next_id += 1;
+            break :result try host.call(self.allocator, outgoing);
+        },
+    };
+    if (response.value.version != protocol.version or response.value.id != outgoing.id) {
+        response.deinit();
+        if (self.transport == .socket) self.disconnect();
+        return error.InvalidServerResponse;
+    }
+    self.server_pid = response.value.server_pid;
+    if (response.value.failure) |failure| {
+        const busy = std.mem.eql(u8, failure.code, "Busy");
+        self.message_len = @min(self.message.len, failure.message.len);
+        @memcpy(self.message[0..self.message_len], failure.message[0..self.message_len]);
+        if (response.value.state != null) try self.acceptState(response) else response.deinit();
+        return if (busy) error.ServerBusy else error.ServerRejected;
+    }
+    return response;
+}
+
+// Sends one framed request and returns the first reply frame, consuming hints that precede it.
+fn exchange(self: *Connection, outgoing: protocol.Request) !std.json.Parsed(protocol.Response) {
+    wire.sendRequest(self.allocator, self.transport.socket.fd, outgoing) catch |err| {
         if (err == error.OutOfMemory or err == error.FrameTooLarge) return err;
         self.disconnect();
         return error.ConnectionLost;
     };
     self.next_id += 1;
     while (true) {
-        const response = (self.nextFrame(true) catch {
+        const response = (self.nextFrame(true) catch |err| {
             self.disconnect();
-            return error.ConnectionLost;
+            return if (err == error.IncompatibleServer) err else error.ConnectionLost;
         }).?;
-        if (response.value.id == 0) {
-            self.notice(response.value) catch |err| {
-                response.deinit();
-                self.disconnect();
-                return err;
-            };
-            response.deinit();
-            continue;
-        }
-        if (response.value.version != protocol.version or response.value.id != outgoing.id) {
+        if (response.value.id != 0) return response;
+        self.notice(response.value) catch |err| {
             response.deinit();
             self.disconnect();
-            return error.InvalidServerResponse;
-        }
-        self.server_pid = response.value.server_pid;
-        if (response.value.failure) |failure| {
-            const busy = std.mem.eql(u8, failure.code, "Busy");
-            self.message_len = @min(self.message.len, failure.message.len);
-            @memcpy(self.message[0..self.message_len], failure.message[0..self.message_len]);
-            if (response.value.state != null) try self.acceptState(response) else response.deinit();
-            return if (busy) error.ServerBusy else error.ServerRejected;
-        }
-        return response;
+            return err;
+        };
+        response.deinit();
     }
 }
 
 /// Borrows the latest observation; state-changing calls or prepareView can invalidate its strings.
-pub fn current(self: *const Remote) protocol.Snapshot {
+pub fn current(self: *const Connection) protocol.Snapshot {
     if (self.state_frame) |frame| return frame.value.state.?;
     std.debug.assert(self.view_frame != null);
     return self.view_frame.?.value.state.?;
 }
 
-fn acceptState(self: *Remote, response: std.json.Parsed(protocol.Response)) !void {
+fn acceptState(self: *Connection, response: std.json.Parsed(protocol.Response)) !void {
     if (response.value.state == null) {
         response.deinit();
         return error.InvalidServerResponse;
@@ -265,7 +331,7 @@ fn acceptState(self: *Remote, response: std.json.Parsed(protocol.Response)) !voi
     // another.
 }
 
-fn absolutePath(self: *Remote, path: []const u8) ![]u8 {
+fn absolutePath(self: *Connection, path: []const u8) ![]u8 {
     const io = std.Io.Threaded.global_single_threaded.io();
     const cwd = try std.process.currentPathAlloc(io, self.allocator);
     defer self.allocator.free(cwd);
@@ -274,18 +340,18 @@ fn absolutePath(self: *Remote, path: []const u8) ![]u8 {
 
 /// Opens/selects a file or new scratch buffer; adopts the response without creating a local
 /// document.
-pub fn open(self: *Remote, options: struct { path: ?[]const u8 = null }) !void {
+pub fn open(self: *Connection, options: struct { path: ?[]const u8 = null }) !void {
     const path = options.path;
     const absolute = if (path) |value| try self.absolutePath(value) else null;
     defer if (absolute) |value| self.allocator.free(value);
     try self.acceptState(try self.call(.{ .id = 0, .op = .open, .path = absolute }));
 }
 
-pub fn select(self: *Remote, id: u32) !void {
+pub fn select(self: *Connection, id: u32) !void {
     try self.acceptState(try self.call(.{ .id = 0, .op = .select, .buffer = id }));
 }
 
-pub fn kill(self: *Remote, id: u32, discard: bool) !void {
+pub fn kill(self: *Connection, id: u32, discard: bool) !void {
     try self.acceptState(try self.call(.{
         .id = 0,
         .op = .kill,
@@ -295,7 +361,7 @@ pub fn kill(self: *Remote, id: u32, discard: bool) !void {
 }
 
 /// Saves to the supplied path or existing buffer path; unnamed buffers require an explicit path.
-pub fn save(self: *Remote, options: struct { path: ?[]const u8 = null }) !void {
+pub fn save(self: *Connection, options: struct { path: ?[]const u8 = null }) !void {
     const absolute = if (options.path) |path| try self.absolutePath(path) else null;
     defer if (absolute) |value| self.allocator.free(value);
     try self.acceptState(try self.call(.{
@@ -311,7 +377,7 @@ pub fn save(self: *Remote, options: struct { path: ?[]const u8 = null }) !void {
 /// The authoritative mutation may precede an allocation/connection failure while receiving its
 /// result.
 pub fn submit(
-    self: *Remote,
+    self: *Connection,
     result_allocator: std.mem.Allocator,
     id: u32,
     edit: protocol.Edit,
@@ -330,20 +396,23 @@ pub fn submit(
     return result;
 }
 
+/// Observes lines of the selected buffer starting at first_line, together with a fresh snapshot.
+/// The host clamps first_line to the document; it does not move the range to follow the cursor.
 /// Views are cached only by authoritative buffer/revision/range; no speculative edits are applied.
-/// Returned strings stay valid until the next successful prepareView or deinit.
-pub fn prepareView(self: *Remote, id: u32, first_line: u32, line_count: u16) !void {
-    if (self.current().buffer != id) return error.BufferChanged;
+/// Allocates and performs a request unless the cached view still matches. The previous view's
+/// strings are released, so clear cells borrowing them first.
+pub fn prepareView(self: *Connection, first_line: u32, line_count: u16) !void {
+    const id = self.current().buffer;
     const rows = @max(1, line_count);
     if (self.view_frame) |frame| {
-        const view = frame.value.view.?;
+        const cached = frame.value.view.?;
         const count = if (first_line < self.current().lines)
             @min(rows, self.current().lines - first_line)
         else
             0;
-        if (!self.needs_refresh and !self.view_invalidated and view.buffer == id and
-            view.revision == self.current().revision and
-            view.first_line == first_line and view.lines.len == count)
+        if (!self.needs_refresh and !self.view_invalidated and cached.buffer == id and
+            cached.revision == self.current().revision and
+            cached.first_line == first_line and cached.lines.len == count)
         {
             return;
         }
@@ -356,10 +425,10 @@ pub fn prepareView(self: *Remote, id: u32, first_line: u32, line_count: u16) !vo
         .line_count = rows,
     });
     errdefer response.deinit();
-    const view = response.value.view orelse return error.InvalidServerResponse;
+    const observed = response.value.view orelse return error.InvalidServerResponse;
     const state = response.value.state orelse return error.InvalidServerResponse;
-    if (view.buffer != id or state.buffer != id or view.revision != state.revision or
-        view.boundaries.len != view.end - view.start + 1)
+    if (observed.buffer != id or state.buffer != id or observed.revision != state.revision or
+        observed.boundaries.len != observed.end - observed.start + 1)
     {
         return error.InvalidServerResponse;
     }
@@ -372,8 +441,21 @@ pub fn prepareView(self: *Remote, id: u32, first_line: u32, line_count: u16) !vo
     self.view_invalidated = self.needs_refresh;
 }
 
-pub fn shutdown(self: *Remote) !void {
+/// Borrows the prepared view while it observes the current buffer and revision; null otherwise.
+/// Strings stay valid until the next successful prepareView or deinit.
+pub fn view(self: *const Connection) ?*const protocol.View {
+    if (self.view_frame == null) return null;
+    const observed = &self.view_frame.?.value.view.?;
+    const state = self.current();
+    if (observed.buffer != state.buffer or observed.revision != state.revision) return null;
+    return observed;
+}
+
+pub fn shutdown(self: *Connection) !void {
     const response = try self.call(.{ .id = 0, .op = .shutdown });
     response.deinit();
-    self.attached = false;
+    switch (self.transport) {
+        .socket => |*socket| socket.attached = false,
+        .in_process => {},
+    }
 }

@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 import tempfile
 import time
-from daemon_support import DaemonRuntime
+from daemon_support import Connection, DaemonRuntime
 from terminal_support import Terminal
 
 repo = Path(__file__).resolve().parents[1]
@@ -86,8 +86,22 @@ return p
         b.send(b'\x11'); b.restored(); b.close(); b = None
         a.send(b'Q\x13')
         assert (root / 'shared.lua').read_text().startswith('XZQab\n')
+        # A peer insertion above A's cursor moves it out of A's observed rows. Without input, A's
+        # invalidation redraw must scroll to the cursor: line 30 with 11 text rows gives top 20.
+        peer = Connection(daemon.directory)
+        try:
+            state = peer.call('open', path=str(root / 'shared.lua'))['state']
+            assert peer.call('submit', buffer=state['buffer'], edit=dict(kind='replace', origin=state['revision'],
+                interaction_origin=state['interaction_revision'], source='peer', start=0, finish=0,
+                text='\n' * 30))['failure'] is None
+            before = len(a.output)
+            idle_change(a, before, b'XZQab')
+            assert a.state()[3] == b'33' and a.state()[5] == b'20', a.state()
+        finally:
+            peer.close()
+        a.send(b'\x13')
         a.command('shutdown-server'); a.restored()
     finally:
         a.close()
         if b is not None: b.close()
-print('Two-client PTY passed: idle invalidation redraw, independent cursor/selection/CAS, shared undo, independent Lua/theme/reload, resize, peer detachment and restoration')
+print('Two-client PTY passed: idle invalidation redraw, peer-displaced cursor following, independent cursor/selection/CAS, shared undo, independent Lua/theme/reload, resize, peer detachment and restoration')

@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
-from daemon_support import Connection, DaemonRuntime
+from daemon_support import PROTOCOL_VERSION, Connection, DaemonRuntime
 
 binary = Path(__file__).resolve().parents[1] / 'zig-out/bin/junc'
 
@@ -108,7 +108,7 @@ class SharedEditor(unittest.TestCase):
 
     def test_partial_frames_and_slow_readers_do_not_stall_another_client(self):
         a, b, sa, sb = self.a, self.b, self.sa, self.sb
-        frame = json.dumps(dict(version=2, id=b.next_id, op='snapshot', buffer=sb['buffer'])).encode()
+        frame = json.dumps(dict(version=PROTOCOL_VERSION, id=b.next_id, op='snapshot', buffer=sb['buffer'])).encode()
         pending_id = b.next_id; b.next_id += 1
         b.socket.sendall(struct.pack('<I', len(frame))[:2])
         started = time.monotonic()
@@ -119,7 +119,7 @@ class SharedEditor(unittest.TestCase):
         large = 'x' * 32_000
         sa = okay(change(a, current, start=0, finish=current['count'], text=large))['state']
         b_state = observation(b, sa['buffer'])['state']
-        query = json.dumps(dict(version=2, id=b.next_id, op='view', buffer=sa['buffer'],
+        query = json.dumps(dict(version=PROTOCOL_VERSION, id=b.next_id, op='view', buffer=sa['buffer'],
             revision=sa['revision'], first_line=0, line_count=1)).encode()
         view_id = b.next_id; b.next_id += 1
         b.socket.sendall(struct.pack('<I', len(query)) + query)
@@ -153,7 +153,7 @@ class SharedEditor(unittest.TestCase):
         try:
             okay(c.hello)
             cs = okay(c.call('open', path=str(self.source)))['state']
-            missing = dict(version=2, id=c.next_id, op='submit', buffer=cs['buffer'],
+            missing = dict(version=PROTOCOL_VERSION, id=c.next_id, op='submit', buffer=cs['buffer'],
                 edit=dict(kind='move', interaction_origin=cs['interaction_revision'], source='missing-origin', position=0))
             encoded = json.dumps(missing).encode()
             c.socket.sendall(struct.pack('<I', len(encoded)) + encoded)

@@ -75,7 +75,7 @@ fn invokeCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
 fn snapshotCallback(maybe_state: ?*lua.lua_State) callconv(.c) c_int {
     const state = maybe_state.?;
     const editor = host(state);
-    editor.pushCommandContext(editor.mainTarget()) catch |err| return fail(state, @errorName(err));
+    editor.pushCommandContext(.document) catch |err| return fail(state, @errorName(err));
     return 1;
 }
 
