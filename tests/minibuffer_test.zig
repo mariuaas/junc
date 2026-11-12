@@ -80,7 +80,8 @@ test "persistent Litura minibuffer edits Unicode and isolates main document sele
     try textIs(&editor.minibuffer.document, "界");
     try input(editor, "ctrl-z", "");
     try textIs(&editor.minibuffer.document, "界é");
-    try input(editor, "ctrl-a", "");
+    try input(editor, "ctrl-x", "");
+    try input(editor, "text", "h");
     try input(editor, "text", "return 2+3");
     try input(editor, "enter", "");
     try std.testing.expectEqualStrings("5", lastOutput(editor));
@@ -104,7 +105,7 @@ test "command discovery completion and description reflect extension metadata an
         \\return function(e)
         \\ e.command('stitch-example', function(c,t) return e.replace(c,'stitched') end,
         \\   {description='Stitch text',category='example'})
-        \\ e.bind('ctrl-b','stitch-example')
+        \\ e.bind('ctrl-t','stitch-example')
         \\end
     );
     try input(editor, "alt-x", "");
@@ -114,7 +115,7 @@ test "command discovery completion and description reflect extension metadata an
     try input(editor, "enter", "");
     try textIs(fixture.document(), "stitched");
     try std.testing.expect(editor.minibuffer.context == null);
-    try input(editor, "ctrl-b", "");
+    try input(editor, "ctrl-t", "");
     try textIs(fixture.document(), "stitchedstitched");
     try evaluate(editor, "editor.command_info('stitch-example').description");
     try std.testing.expectEqualStrings("Stitch text", lastOutput(editor));
@@ -124,7 +125,7 @@ test "command discovery completion and description reflect extension metadata an
     try input(editor, "text", "stitch-");
     try input(editor, "tab", "");
     try input(editor, "enter", "");
-    try std.testing.expect(std.mem.indexOf(u8, lastOutput(editor), "ctrl-b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lastOutput(editor), "ctrl-t") != null);
     try std.testing.expect(std.mem.indexOf(u8, lastOutput(editor), "Stitch text") != null);
     try input(editor, "ctrl-o", "");
     try input(editor, "text", "does-not-exist");
@@ -149,12 +150,12 @@ test "live Lua expressions statements errors registration binding and invocation
     try std.testing.expect(std.mem.indexOf(u8, lastOutput(editor), "useful failure") != null);
     try evaluate(editor, "this is invalid Lua !!!");
     try std.testing.expect(std.mem.indexOf(u8, lastOutput(editor), "minibuffer") != null);
-    try evaluate(editor, "editor.command('live', function(c,t) return editor.replace(c,'LIVE') end); editor.bind('ctrl-b','live')");
+    try evaluate(editor, "editor.command('live', function(c,t) return editor.replace(c,'LIVE') end); editor.bind('ctrl-t','live')");
     try evaluate(editor, "editor.invoke('live').revision");
     try std.testing.expectEqualStrings("1", lastOutput(editor));
     try textIs(fixture.document(), "LIVE");
     try input(editor, "ctrl-g", "");
-    try input(editor, "ctrl-b", "");
+    try input(editor, "ctrl-t", "");
     try textIs(fixture.document(), "LIVELIVE");
     try evaluate(editor, "editor.last_result.kind");
     // Input edits also have observable submission results in this same Lua environment.
@@ -249,7 +250,8 @@ test "prompt callback errors retain input and failed reload retains prompt callb
     try textIs(&editor.minibuffer.document, "bad");
     try std.testing.expect(std.mem.indexOf(u8, lastOutput(editor), "try okay") != null);
     try std.testing.expectError(error.LuaError, editor.reload("invalid Lua !!!"));
-    try input(editor, "ctrl-a", "");
+    try input(editor, "ctrl-x", "");
+    try input(editor, "text", "h");
     try input(editor, "text", "okay");
     try input(editor, "enter", "");
     try std.testing.expect(editor.minibuffer.context == null);
@@ -365,19 +367,19 @@ test "Lua helpers preserve captured origins and reject an old snapshot instead o
     const fixture = try Fixture.create(allocator, "abc", null);
     defer fixture.destroy();
     const editor = &fixture.editor;
-    try evaluate(editor, "captured=editor.state(); editor.command('stale',function() return editor.replace(captured,'BAD') end); editor.bind('ctrl-b','stale')");
+    try evaluate(editor, "captured=editor.state(); editor.command('stale',function() return editor.replace(captured,'BAD') end); editor.bind('ctrl-t','stale')");
     try input(editor, "ctrl-g", "");
     try input(editor, "text", "X");
     const revision = fixture.document().revision;
     const interaction = try fixture.document().interactionRevision(fixture.session());
     // The host rejects the stale origin and the editor shows its reason; nothing is retried.
-    try std.testing.expectError(error.ServerRejected, editor.dispatch("ctrl-b", ""));
+    try std.testing.expectError(error.ServerRejected, editor.dispatch("ctrl-t", ""));
     try std.testing.expectEqualStrings("StaleRevision", editor.status());
     try textIs(fixture.document(), "Xabc");
     try std.testing.expectEqual(revision, fixture.document().revision);
     try std.testing.expectEqual(interaction, try fixture.document().interactionRevision(fixture.session()));
-    try evaluate(editor, "editor.command('wrong-buffer',function(c) c.buffer_id=99; return editor.move(c,0) end); editor.bind('ctrl-b','wrong-buffer')");
+    try evaluate(editor, "editor.command('wrong-buffer',function(c) c.buffer_id=99; return editor.move(c,0) end); editor.bind('ctrl-t','wrong-buffer')");
     try input(editor, "ctrl-g", "");
-    try std.testing.expectError(error.BufferChanged, editor.dispatch("ctrl-b", ""));
+    try std.testing.expectError(error.BufferChanged, editor.dispatch("ctrl-t", ""));
     try textIs(fixture.document(), "Xabc");
 }

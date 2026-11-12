@@ -39,7 +39,7 @@ return p
         assert os.getpgid(pid) != os.getpgid(terminal.process.pid)
         assert os.getsid(pid) != os.getsid(terminal.process.pid)
         terminal.evaluate("client_token=99; editor.invoke('buffer-end'); editor.invoke('left'); editor.invoke('select-left')")
-        terminal.send(b'\x07\x10')  # Presentation remains client-local while buffers change.
+        terminal.send(b'\x07\x18\x10')  # Presentation remains client-local while buffers change.
         terminal.send(b'\x1b:')
         before = terminal.state()
         assert before[0] == b'1' and before[1] == b'0' and before[4] != b'nil'
@@ -130,7 +130,7 @@ return p
     try:
         assert terminal.state()[0] == b'2' and terminal.state()[7] == b'classic'
         assert b'true' in terminal.evaluate('attachment_token==nil')
-        assert b'document' in terminal.evaluate('editor.keymap_state().layers[1].name')
+        assert b'emacs' in terminal.evaluate('editor.keymap_state().layers[1].name')
         terminal.send(b'\x07\x13')
         assert '// unsaved\n' in (root / 'two.zig').read_text()
         terminal.command('shutdown-server')

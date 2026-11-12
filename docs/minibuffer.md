@@ -8,8 +8,9 @@ M-x runs a named command; M-: evaluates Lua in the running editor. Both use the 
 | Escape / Ctrl-G | Cancel and return to the document |
 | Tab | Complete a prefix; repeat to cycle ambiguous matches |
 | Up / Down | Cycle active completions, otherwise navigate this context's history |
-| Left / Right, Home / End | Move by grapheme or within the line |
-| Shift plus a movement key, Ctrl-A | Extend selection, or select all |
+| Left / Right, Home / End, C-f / C-b, C-n / C-p, C-a / C-e | Move by grapheme or within the line |
+| Shift plus a movement key, Ctrl-X h | Extend selection, or select all |
+| M-p / M-n | Cycle this context's history, like Up / Down |
 | Backspace / Delete, Ctrl-Z / Ctrl-Y | Edit input, undo / redo input edits |
 | Shift-Enter | Insert a newline, if the terminal reports that modifier |
 | Ctrl-R | Reload commands and presentation while retaining input |
@@ -32,7 +33,7 @@ An extension can supply metadata without changing the original two-argument API:
 editor.command('stamp', function(context)
   return editor.replace(context, 'hello')
 end, {description='Insert a greeting', category='example'})
-editor.bind('ctrl-b', 'stamp')
+editor.bind('ctrl-t', 'stamp')
 ```
 
 ## Live Lua
@@ -46,11 +47,11 @@ editor.command_names()
 editor.command_info('save')
 editor.state().revision
 editor.command('greet', function(c) return editor.replace(c, 'hello') end)
-editor.bind('ctrl-b', 'greet')
+editor.bind('ctrl-t', 'greet')
 editor.invoke('greet')
 ```
 
-Cancel input, then press Ctrl-B to use the new command. `editor.invoke(name, optional_text)` returns a submission summary containing `kind`, `revision` and `interaction_revision`, or true for a command without a returned intent. Errors are raised as ordinary Lua errors. Replacing a command with another `editor.command` call takes effect immediately. `editor.state()` returns a copied main-document command snapshot; it exposes no native document pointer. Both invocation and key dispatch use the established public Litura submission bridge.
+Cancel input, then press Ctrl-T to use the new command. `editor.invoke(name, optional_text)` returns a submission summary containing `kind`, `revision` and `interaction_revision`, or true for a command without a returned intent. Errors are raised as ordinary Lua errors. Replacing a command with another `editor.command` call takes effect immediately. `editor.state()` returns a copied main-document command snapshot; it exposes no native document pointer. Both invocation and key dispatch use the established public Litura submission bridge.
 
 ## Generic prompts
 

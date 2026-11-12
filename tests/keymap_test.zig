@@ -33,7 +33,7 @@ test "transient priority and recency precede context and global maps while docum
         \\   local text=name; e.command(name,function(c) return e.replace(c,text) end)
         \\ end
         \\ e.bind('j','G')
-        \\ e.keymap('document',{j='C'})
+        \\ e.keymap('emacs',{j='C'})
         \\ e.keymap('a',{j='A'},{priority=10})
         \\ e.keymap('b',{j='B'},{priority=5})
         \\ e.push_keymap('a'); e.push_keymap('b')
@@ -54,7 +54,7 @@ test "transient priority and recency precede context and global maps while docum
     try input(editor, "ctrl-g", "");
     try input(editor, "text", "j");
     try fixture.expectText("ABAC");
-    try evaluate(editor, "editor.keymap('document',{})");
+    try evaluate(editor, "editor.keymap('emacs',{})");
     try input(editor, "ctrl-g", "");
     try input(editor, "text", "j");
     try fixture.expectText("ABACG");
@@ -111,6 +111,7 @@ test "a direct binding shadows a lower prefix and a higher prefix shadows a lowe
     try editor.reload(
         \\return function(e)
         \\ e.bind('ctrl-x ctrl-s',nil); e.bind('ctrl-x ctrl-r',nil)
+        \\ e.bind('ctrl-x ctrl-p',nil); e.bind('ctrl-x h',nil)
         \\ e.bind('ctrl-x','buffer-start')
         \\ e.keymap('navigation',{['ctrl-x ctrl-s']='buffer-end',escape='keymap.pop'})
         \\ e.push_keymap('navigation')
@@ -120,7 +121,7 @@ test "a direct binding shadows a lower prefix and a higher prefix shadows a lowe
     try std.testing.expect(std.mem.indexOf(u8, editor.status(), "ctrl-s -> buffer-end") != null);
     try input(editor, "ctrl-s", "");
     try std.testing.expectEqual(@as(u32, 3), editor.position());
-    try evaluate(editor, "editor.keymap('navigation',{['ctrl-x']='buffer-start',escape='keymap.pop'}); editor.bind('ctrl-x',nil); editor.bind('ctrl-x ctrl-s','buffer-end')");
+    try evaluate(editor, "editor.keymap('navigation',{['ctrl-x']='buffer-start',escape='keymap.pop'}); editor.bind('ctrl-x',nil); editor.bind('ctrl-x h',nil); editor.bind('ctrl-x ctrl-p',nil); editor.bind('ctrl-x ctrl-s','buffer-end')");
     try input(editor, "ctrl-g", "");
     try input(editor, "ctrl-x", "");
     try std.testing.expectEqual(@as(u32, 0), editor.position());
@@ -297,4 +298,41 @@ test "space Unicode and deep sequences use normalized events without splitting t
     try std.testing.expectEqual(@as(u32, 0), fixture.document().revision);
     try input(editor, "text", "gg");
     try fixture.expectText("abcgg");
+}
+
+test "emacs motion keys use existing navigation targets and relocate select-all and presentation" {
+    const fixture = try Fixture.create(allocator, "ab\ncd", null);
+    defer fixture.destroy();
+    const editor = &fixture.editor;
+    try input(editor, "ctrl-n", "");
+    try std.testing.expectEqual(@as(u32, 3), editor.position());
+    try input(editor, "ctrl-p", "");
+    try std.testing.expectEqual(@as(u32, 0), editor.position());
+    try input(editor, "ctrl-e", "");
+    try std.testing.expectEqual(@as(u32, 2), editor.position());
+    try input(editor, "ctrl-a", "");
+    try std.testing.expectEqual(@as(u32, 0), editor.position());
+    try input(editor, "ctrl-f", "");
+    try std.testing.expectEqual(@as(u32, 1), editor.position());
+    try input(editor, "ctrl-b", "");
+    try std.testing.expectEqual(@as(u32, 0), editor.position());
+    try input(editor, "alt->", "");
+    try std.testing.expectEqual(@as(u32, 5), editor.position());
+    try input(editor, "alt-<", "");
+    try std.testing.expectEqual(@as(u32, 0), editor.position());
+    try input(editor, "ctrl-x", "");
+    try input(editor, "text", "h");
+    try std.testing.expectEqual(@as(u32, 5), editor.position());
+    try std.testing.expectEqual(@as(?u32, 0), editor.mark());
+    try input(editor, "ctrl-x", "");
+    try input(editor, "ctrl-p", "");
+    try std.testing.expectEqualStrings("minimal", editor.preset.slice());
+    try input(editor, "ctrl-l", "");
+    try input(editor, "text", "xy");
+    try input(editor, "ctrl-a", "");
+    try std.testing.expectEqual(@as(u32, 0), try editor.minibuffer.position());
+    try input(editor, "ctrl-e", "");
+    try std.testing.expectEqual(@as(u32, 2), try editor.minibuffer.position());
+    try input(editor, "escape", "");
+    try fixture.expectText("ab\ncd");
 }

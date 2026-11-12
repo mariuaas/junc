@@ -37,6 +37,7 @@ test "presets and terminal-derived colors are Lua policy with safe unanswered-qu
     try std.testing.expectEqual([3]u8{ 1, 2, 3 }, editor.presentation.theme.fg.rgb);
     try std.testing.expectEqual([3]u8{ 10, 20, 30 }, editor.presentation.theme.bg.rgb);
     try std.testing.expectEqual([3]u8{ 40, 50, 60 }, editor.presentation.theme.selection_bg.rgb);
+    try command(editor, "ctrl-x", "");
     try command(editor, "ctrl-p", "");
     try std.testing.expectEqualStrings("minimal", editor.preset.slice());
     try std.testing.expect(!editor.presentation.gutter_visible);

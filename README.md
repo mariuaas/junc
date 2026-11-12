@@ -30,7 +30,7 @@ zig build -Doptimize=ReleaseSafe
 
 You'll need Zig **0.16.0**, `make` and a native C compiler. The build fetches its dependencies and builds LuaJIT for you. Tested on macOS arm64; cross compilation isn't supported. Run `junc` without a filename for a scratch buffer.
 
-Arrow keys move, Shift selects, typing edits. Less obviously:
+Arrow keys move, Shift selects, typing edits. The document map is Emacs for motion: C-f / C-b, C-n / C-p, C-a / C-e, M-< / M->.
 
 | Key | Action |
 | --- | --- |
@@ -40,7 +40,8 @@ Arrow keys move, Shift selects, typing edits. Less obviously:
 | M-x / Ctrl-O | Run a named command |
 | M-: / Ctrl-L | Evaluate Lua in the running editor |
 | Ctrl-R | Reload Lua commands and presentation |
-| Ctrl-P | Switch between Classic and Minimal |
+| Ctrl-X Ctrl-P | Switch between Classic and Minimal |
+| Ctrl-X h | Select all |
 
 M-x gives you `open-file`, `switch-buffer`, `save-as` and friends. Tab completes; Escape or Ctrl-G gets you out of a prompt. Several terminals can share the same buffers, each with its own cursor and Lua setup. The local server starts automatically and keeps unsaved buffers after you detach. [How that works](docs/daemon.md).
 

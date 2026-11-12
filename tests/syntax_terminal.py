@@ -69,10 +69,10 @@ def exercise(language):
             raw = snapshot()
             assert has_color(raw, (199, 146, 234)), raw
             initial = state(raw)
-            send(b'\x10')  # Minimal, same document/session.
+            send(b'\x18\x10')  # Minimal, same document/session.
             raw = snapshot()
             assert has_color(raw, (237, 207, 142)), raw
-            send(b'\x10')
+            send(b'\x18\x10')
             assert state(snapshot()) == initial
             if language == 'zig':
                 send(b'// edited\r')

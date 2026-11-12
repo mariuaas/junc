@@ -116,13 +116,13 @@ return p
         clean = evaluate("editor.command_names()[1]")
         assert b'backspace' in clean, clean
         # A separately registered extension is discoverable immediately and binds through dispatch.
-        clean = evaluate("editor.command('live-pty',function(c) return editor.replace(c,'LIVE') end); editor.bind('ctrl-b','live-pty')")
+        clean = evaluate("editor.command('live-pty',function(c) return editor.replace(c,'LIVE') end); editor.bind('ctrl-t','live-pty')")
         assert state(clean) == before
         send(b'\x07\x1bxlive-p\t')
         assert b'live-pty' in snapshot()
         send(b'\r')
         assert state(snapshot())[0] == b'1'
-        send(b'\x02\x13')
+        send(b'\x14\x13')
         assert (root / 'sample.lua').read_text() == 'LIVELIVEocal value = 1\n'
         # Unicode input and selection use the shared cell renderer, including narrow resize.
         send(b'\x0c')  # Ctrl-L fallback opens Lua.
@@ -144,7 +144,7 @@ return p
         send(b'\x07')
         # A rejected whole-VM reload keeps a temporary live command/binding active.
         (root / 'lua/extension.lua').write_text('this is invalid Lua !!!')
-        send(b'\x12\x02\x13')
+        send(b'\x12\x14\x13')
         assert (root / 'sample.lua').read_text().startswith('LIVELIVELIVE')
         (root / 'lua/extension.lua').unlink()
         # Requesting reload from an executing Lua chunk defers replacement until pcall returns.

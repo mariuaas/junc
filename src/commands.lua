@@ -80,12 +80,11 @@ M.command('save', function(c)
 end)
 M.bind('backspace','backspace'); M.bind('delete','delete'); M.bind('enter','enter'); M.bind('tab','tab')
 M.bind('ctrl-s','save'); M.bind('ctrl-q','quit'); M.bind('ctrl-r','reload')
-M.bind('ctrl-a','select-all'); M.bind('ctrl-z','undo'); M.bind('ctrl-y','redo')
+M.bind('ctrl-z','undo'); M.bind('ctrl-y','redo')
 M.bind('ctrl-w','wrap')
 M.command('presentation-next', function(c)
   return {kind='presentation', name=presentation.next(c.presentation)}
 end)
-M.bind('ctrl-p', 'presentation-next')
 M.metadata.insert = {description='Replace the selection with input text', category='editing'}
 M.metadata.save = {description='Save the current document', category='file'}
 M.metadata.reload = {description='Reload Lua commands and presentation', category='runtime'}
@@ -106,6 +105,19 @@ M.bind('alt-x', 'execute-command'); M.bind('ctrl-o', 'execute-command')
 M.bind('alt-colon', 'lua-repl'); M.bind('ctrl-l', 'lua-repl')
 M.command('buffer-start', function(c) return M.move(c, 0) end)
 M.command('buffer-end', function(c) return M.move(c, c.count) end)
+M.command('forward-char', M.commands.right, {description='Move one grapheme forward', category='motion'})
+M.command('backward-char', M.commands.left, {description='Move one grapheme backward', category='motion'})
+M.command('next-line', M.commands.down, {description='Move to the same column on the next line', category='motion'})
+M.command('previous-line', M.commands.up, {description='Move to the same column on the previous line', category='motion'})
+M.command('beginning-of-line', M.commands.home, {description='Move to the start of the current line', category='motion'})
+M.command('end-of-line', M.commands['end'], {description='Move to the end of the current line', category='motion'})
+M.command('beginning-of-buffer', M.commands['buffer-start'], {description='Move to the start of the buffer', category='motion'})
+M.command('end-of-buffer', M.commands['buffer-end'], {description='Move to the end of the buffer', category='motion'})
+M.command('delete-char', M.commands.delete, {description='Delete the next grapheme, or the selection', category='editing'})
+M.command('keyboard-quit', function()
+  M.cancel_key_sequence()
+  return {kind='key-feedback', message='Quit'}
+end, {description='Cancel a pending key sequence', category='runtime'})
 M.command('keymap.pop', function(c)
   local name=M.pop_keymap{context=c.surface}
   return {kind='key-feedback', message=name and ('Popped '..name) or 'No transient keymap'}
@@ -133,12 +145,32 @@ for _, action in ipairs({'cancel','submit','complete','previous','next'}) do
   local a=action
   M.command('minibuffer.'..a, function() M.input_action(a) end)
 end
+M.keymap('emacs', {
+  ['ctrl-f']='forward-char', ['ctrl-b']='backward-char',
+  ['ctrl-n']='next-line', ['ctrl-p']='previous-line',
+  ['ctrl-a']='beginning-of-line', ['ctrl-e']='end-of-line',
+  ['ctrl-d']='delete-char', ['ctrl-g']='keyboard-quit',
+  ['ctrl-shift-f']='select-right', ['ctrl-shift-b']='select-left',
+  ['ctrl-shift-n']='select-down', ['ctrl-shift-p']='select-up',
+  ['ctrl-shift-a']='select-home', ['ctrl-shift-e']='select-end',
+  ['alt-<']='beginning-of-buffer', ['alt-shift-<']='beginning-of-buffer',
+  ['alt->']='end-of-buffer', ['alt-shift->']='end-of-buffer',
+})
+M.set_context_keymap('document', 'emacs')
 M.keymap('minibuffer', {
   escape='minibuffer.cancel', ['ctrl-g']='minibuffer.cancel', enter='minibuffer.submit',
-  tab='minibuffer.complete', up='minibuffer.previous', down='minibuffer.next', ['shift-enter']='enter',
+  tab='minibuffer.complete', up='minibuffer.previous', down='minibuffer.next',
+  ['alt-p']='minibuffer.previous', ['alt-n']='minibuffer.next', ['shift-enter']='enter',
+  ['ctrl-f']='forward-char', ['ctrl-b']='backward-char',
+  ['ctrl-n']='next-line', ['ctrl-p']='previous-line',
+  ['ctrl-a']='beginning-of-line', ['ctrl-e']='end-of-line', ['ctrl-d']='delete-char',
+  ['alt-<']='beginning-of-buffer', ['alt-shift-<']='beginning-of-buffer',
+  ['alt->']='end-of-buffer', ['alt-shift->']='end-of-buffer',
 })
 M.bind('ctrl-x ctrl-s', 'save')
 M.bind('ctrl-x ctrl-r', 'reload')
+M.bind('ctrl-x ctrl-p', 'presentation-next')
+M.bind('ctrl-x h', 'select-all')
 local function buffer_candidates()
   local entries={}
   local current=M.state().buffer_id

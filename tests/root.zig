@@ -8,7 +8,8 @@ test "ordinary typing and a separately loaded extension share observable submiss
     var ordinary = (try editor.dispatch("text", "abc")).?;
     defer ordinary.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u32, 1), ordinary.edit_event.new_revision);
-    var select = (try editor.dispatch("ctrl-a", "")).?;
+    _ = try editor.dispatch("ctrl-x", "");
+    var select = (try editor.dispatch("text", "h")).?;
     defer select.deinit(std.testing.allocator);
     try std.testing.expect(select.interaction_result.new_revision > select.interaction_result.old_revision);
     var extension = (try editor.dispatch("ctrl-w", "")).?;

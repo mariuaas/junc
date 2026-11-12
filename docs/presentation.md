@@ -1,6 +1,6 @@
 # Live presentation
 
-Presentation is Lua policy: you can change colors, the gutter and the status line while the document stays open. Edit `lua/presentation.lua` in junc’s working directory, then press Ctrl-R to load it. Ctrl-P switches between the shipped Classic and Minimal presets. The executable embeds a fallback copy, so it also works without a Lua directory.
+Presentation is Lua policy: you can change colors, the gutter and the status line while the document stays open. Edit `lua/presentation.lua` in junc’s working directory, then press Ctrl-R to load it. Ctrl-X Ctrl-P switches between the shipped Classic and Minimal presets. The executable embeds a fallback copy, so it also works without a Lua directory.
 
 Classic uses terminal-default text colors, a numbered gutter, a distinct selection, a cell cursor and a detailed status line. Minimal hides the gutter, uses an explicit green palette, and supplies a compact status function. Both use the same interface, allowing Zig to render either preset without branches for its name. Preset names are open strings.
 
@@ -17,7 +17,7 @@ The module returns a plain table with `default`, `next(name)` and `presets`. Eac
 | `status_visible` | Boolean; false releases the status row to the document |
 | `status(state)` | Returns one UTF-8 line, at most 4096 bytes, without control characters |
 
-`default` names an existing preset. `next(name)` returns an existing preset name; the bundled Ctrl-P command uses it. The active name survives reload, so a replacement module must still define that name. Names contain 1–63 bytes of printable UTF-8. Metatables on configuration tables are rejected.
+`default` names an existing preset. `next(name)` returns an existing preset name; the bundled Ctrl-X Ctrl-P command uses it. The active name survives reload, so a replacement module must still define that name. Names contain 1–63 bytes of printable UTF-8. Metatables on configuration tables are rejected.
 
 The theme fields are `fg`, `bg`, `selection_fg`, `selection_bg`, `cursor_fg`, `cursor_bg`, `gutter_fg`, `gutter_bg`, `status_fg` and `status_bg`. Each color is `"default"`, an integer palette index from 0 through 255, or an RGB string such as `"#b8ce9a"`.
 

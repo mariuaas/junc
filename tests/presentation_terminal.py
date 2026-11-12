@@ -94,7 +94,7 @@ with tempfile.TemporaryDirectory(prefix='junc-presentation-') as directory, Daem
         assert state(clean, b'LIVE-B') == before
         assert re.search(rb'19[:;]35[:;]51', raw), raw
         assert output.count(b'\x1b[?1049h') == 1, 'terminal was recreated'
-        send(b'\x10')
+        send(b'\x18\x10')
         _, clean = snapshot()
         minimal = state(clean, b'LIVE-B')
         assert minimal[:-1] == before[:-1] and minimal[-1] == b'minimal'

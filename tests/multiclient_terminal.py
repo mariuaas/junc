@@ -66,13 +66,13 @@ return p
         assert a.state()[1] == b.state()[1] == b'3'
         assert b_before[2] == b.state()[2], 'shared undo advanced B interaction revision'
         # UI and extensions stay independent; a live command still submits through the shared bridge.
-        a.evaluate("editor.command('only-a',function(c) return editor.replace(c,'Z') end); editor.bind('ctrl-b','only-a')")
+        a.evaluate("editor.command('only-a',function(c) return editor.replace(c,'Z') end); editor.bind('ctrl-t','only-a')")
         assert b'true' in b.evaluate("editor.commands['only-a']==nil")
         b.send(b'\x07')
-        a.send(b'\x07\x10')
+        a.send(b'\x07\x18\x10')
         assert a.state()[7] == b'minimal' and b.state()[7] == b'classic'
         before = len(b.output)
-        a.send(b'\x02')
+        a.send(b'\x14')
         idle_change(b, before, b'Z')
         assert a.state()[1] == b.state()[1] == b'4'
         # Resize one terminal while preserving both live sessions and shared source rendering.
