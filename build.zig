@@ -68,6 +68,12 @@ pub fn build(b: *std.Build) void {
     });
     surface.addImport("junc", module);
     surface.addImport("vaxis", vaxis.module("vaxis"));
+    const terminal_input = b.createModule(.{
+        .root_source_file = b.path("src/TerminalInput.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    terminal_input.addImport("vaxis", vaxis.module("vaxis"));
     const exe = b.addExecutable(.{
         .name = "junc",
         .root_module = b.createModule(.{
@@ -77,6 +83,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addImport("surface", surface);
+    exe.root_module.addImport("terminal_input", terminal_input);
     exe.root_module.addImport("junc", module);
     exe.root_module.addImport("vaxis", vaxis.module("vaxis"));
     b.installArtifact(exe);
@@ -91,6 +98,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tests.root_module.addImport("surface", surface);
+    tests.root_module.addImport("terminal_input", terminal_input);
     tests.root_module.addImport("vaxis", vaxis.module("vaxis"));
     tests.root_module.addImport("junc", module);
     b.step("test", "Run bridge and editing tests").dependOn(&b.addRunArtifact(tests).step);

@@ -106,6 +106,7 @@ python3 tests/terminal_support_test.py
 python3 tests/daemon_terminal.py
 python3 tests/multiclient_test.py
 python3 tests/multiclient_terminal.py
+python3 tests/paste_terminal.py
 ```
 
 The process test races ordinary launches, checks per-user endpoint safety and canonical identities, crosses the real idle deadline for clean and dirty detached servers, checks revision rejection and history across attachments, and exercises save/kill/framing/order/shutdown. The PTY test opens several source/scratch buffers, switches with completion, checks exact cursor/selection/viewport restoration, uses the live Lua VM and keymaps, reloads policy, detaches dirty state, attaches a new independent client, and verifies graceful and connection-loss terminal restoration. The existing terminal, syntax, presentation, minibuffer and keymap suites also run against isolated private daemons.

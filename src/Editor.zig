@@ -36,6 +36,8 @@ pub const Submission = @import("submission.zig").Result;
 pub const Focus = enum { document, minibuffer };
 const BufferViewport = struct { buffer: u32, top: u32, left: u32 };
 
+const Entry = enum { dispatch, execute };
+
 // A decoded intent. Strings borrow Lua values that stay on the stack until dispatch returns.
 const Action = union(enum) {
     feedback: []const u8,
@@ -230,12 +232,21 @@ fn string(state: *lua.lua_State, value: []const u8) void {
 /// owning submission summary for edits. Lua sees a revision-stamped snapshot; every text or
 /// interaction change is one Litura submission.
 pub fn dispatch(self: *Editor, key: []const u8, text: []const u8) !?Submission {
+    return self.focused(.dispatch, key, text);
+}
+
+/// Runs Lua's paste command once on the focused surface, without interpreting text as keybindings.
+pub fn paste(self: *Editor, text: []const u8) !?Submission {
+    return self.focused(.execute, "paste", text);
+}
+
+fn focused(self: *Editor, entry: Entry, key: []const u8, text: []const u8) !?Submission {
     runtime.bind(self);
     defer self.finishDeferred() catch |err| {
         if (err != error.LuaError) self.report(@errorName(err));
     };
     const focus: Focus = if (self.minibuffer.context != null) .minibuffer else .document;
-    const result = try self.run(focus, .dispatch, key, text);
+    const result = try self.run(focus, entry, key, text);
     if (focus == .minibuffer) {
         if (result) |value| {
             self.minibuffer.clearCandidates();
@@ -438,7 +449,7 @@ fn origins(self: *Editor, focus: Focus) !intent.Origins {
 fn run(
     self: *Editor,
     focus: Focus,
-    entry: enum { dispatch, execute },
+    entry: Entry,
     key: []const u8,
     text: []const u8,
 ) !?Submission {

@@ -3,7 +3,7 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const junc = @import("junc");
 const Surface = @import("surface");
-const Event = union(enum) { key_press: vaxis.Key, winsize: vaxis.Winsize, color_report: vaxis.Color.Report };
+const TerminalInput = @import("terminal_input");
 pub const panic = vaxis.panic_handler;
 pub const std_options: std.Options = .{ .log_level = .warn };
 
@@ -33,18 +33,21 @@ pub fn main(init: std.process.Init) !void {
     editor.reloadFiles(.{ .commands = false }) catch |err| editor.report(@errorName(err));
     var surface: Surface = .{};
     defer surface.deinit(allocator);
+    var input_failure: ?[]const u8 = null;
+    defer if (input_failure) |message| std.log.scoped(.input).err("{s}", .{message});
     var buffer: [4096]u8 = undefined;
     var tty = try vaxis.Tty.init(init.io, &buffer);
     defer tty.deinit();
     var vx = try vaxis.init(init.io, allocator, init.environ_map, .{});
     defer vx.deinit(allocator, tty.writer());
-    var loop: vaxis.Loop(Event) = .init(init.io, &tty, &vx);
+    var input_loop = TerminalInput.init(init.io, allocator, &tty, &vx);
     // This revision's SIGWINCH callback invokes blocking Io operations from a
     // signal handler. Poll size on the main thread to avoid resize deadlocks.
     vaxis.Tty.resetSignalHandler();
-    try loop.start();
-    defer loop.stop();
+    try input_loop.start();
+    defer input_loop.deinit();
     try vx.enterAltScreen(tty.writer());
+    try vx.setBracketedPaste(tty.writer(), true);
     try vx.queryTerminal(tty.writer(), .fromMilliseconds(200));
     try vx.resize(allocator, tty.writer(), try tty.getWinsize());
     try vx.queryColor(tty.writer(), .fg);
@@ -64,10 +67,11 @@ pub fn main(init: std.process.Init) !void {
             try vx.render(tty.writer());
             redraw = surface.redraw_requested;
         }
-        const event = try loop.tryEvent() orelse {
+        const event = try input_loop.tryEvent() orelse {
             try init.io.sleep(.fromMilliseconds(16), .real);
             continue;
         };
+        defer input_loop.release(event);
         redraw = true;
         switch (event) {
             .color_report => |report| switch (report.kind) {
@@ -79,12 +83,19 @@ pub fn main(init: std.process.Init) !void {
                 .cursor => {},
             },
             .winsize => |reported_size| try vx.resize(allocator, tty.writer(), reported_size),
-            .key_press => |key| {
+            .failure => |message| {
+                input_failure = message;
+                return error.TerminalInputFailed;
+            },
+            .key_press, .paste => {
                 var name_buffer: [64]u8 = undefined;
-                const name = keyName(key, &name_buffer);
                 var utf8: [4]u8 = undefined;
-                const input = keyText(key, &utf8);
-                if (editor.dispatch(name, input)) |result| {
+                const submission = switch (event) {
+                    .key_press => |key| editor.dispatch(keyName(key, &name_buffer), keyText(key, &utf8)),
+                    .paste => |text| editor.paste(text),
+                    else => unreachable, // Only key_press and paste enter this branch.
+                };
+                if (submission) |result| {
                     if (result) |value| {
                         var owned = value;
                         defer owned.deinit(allocator);

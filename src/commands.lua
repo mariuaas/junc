@@ -50,6 +50,11 @@ function M.move(c, position, select)
     origin=c.revision, interaction_origin=c.interaction_revision, buffer_id=c.buffer_id}
 end
 M.command('insert', function(c, text) return M.replace(c, text) end)
+M.command('paste', function(c, text)
+  if text=='' then return end
+  M.cancel_key_sequence()
+  return M.replace(c, (text:gsub('\r\n','\n'):gsub('\r','\n')))
+end, {description='Insert pasted text as one edit', category='editing'})
 M.command('backspace', function(c)
   if c.first ~= c.last then return M.replace(c, '') end
   if c.cursor > 0 then return M.replace(c, '', c.cursor-1, c.cursor) end

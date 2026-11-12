@@ -87,7 +87,11 @@ class Terminal:
         self.send(b'\x1bx' + name.encode() + b'\r')
 
     def restored(self, success=True):
-        self.process.wait(timeout=5)
+        # Debug error traces can fill the PTY; keep draining while waiting for restoration/exit.
+        deadline = time.monotonic() + 5
+        while self.process.poll() is None and time.monotonic() < deadline:
+            self.drain(.02)
+        self.process.wait(timeout=.1)
         self.drain(.1)
         assert (self.process.returncode == 0) == success
         assert bytes(self.output).count(b'\x1b[?1049h') == 1
@@ -98,10 +102,11 @@ class Terminal:
         """Reap the owned child and release both PTY descriptors, including incomplete startup."""
         if self.process is not None and self.process.poll() is None:
             self.process.kill()
-            self.process.wait()
         for name in ('master', 'slave'):
             descriptor = getattr(self, name)
             if descriptor >= 0:
                 os.close(descriptor)
                 setattr(self, name, -1)
+        if self.process is not None:
+            self.process.wait(timeout=5)
 
