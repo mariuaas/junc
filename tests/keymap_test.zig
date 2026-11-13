@@ -112,6 +112,8 @@ test "a direct binding shadows a lower prefix and a higher prefix shadows a lowe
         \\return function(e)
         \\ e.bind('ctrl-x ctrl-s',nil); e.bind('ctrl-x ctrl-r',nil)
         \\ e.bind('ctrl-x ctrl-p',nil); e.bind('ctrl-x h',nil)
+        \\ e.bind('ctrl-x up',nil); e.bind('ctrl-x down',nil)
+        \\ e.bind('ctrl-x d',nil); e.bind('ctrl-x 1',nil)
         \\ e.bind('ctrl-x','buffer-start')
         \\ e.keymap('navigation',{['ctrl-x ctrl-s']='buffer-end',escape='keymap.pop'})
         \\ e.push_keymap('navigation')

@@ -1,9 +1,9 @@
-//! Version-two hosting messages. Slices borrow their decoded frame arena, never document pointers.
+//! Versioned hosting messages. Slices borrow their decoded frame arena, never document pointers.
+const std = @import("std");
 const syntax = @import("syntax.zig");
 
-/// Bumped whenever a message's shape or an operation's meaning changes. Version 3 made `observe`
-/// return the requested range instead of moving it to the session's cursor.
-pub const version = 3;
+/// Version 4 adds session selection observations and atomic multi-cursor requests.
+pub const version = 4;
 pub const frame_bytes_max = 64 * 1024 * 1024;
 pub const Op = enum {
     hello,
@@ -20,8 +20,37 @@ pub const Op = enum {
     detach,
     shutdown,
 };
+/// One cursor's requested action. Zero anchor creates a caret only in a selections request.
+pub const CursorEdit = struct {
+    kind: enum { replace, move, keep } = .move,
+    cursor_anchor: u32 = 0,
+    start: u32 = 0,
+    finish: u32 = 0,
+    text: []const u8 = "",
+    position: u32 = 0,
+    mark: ?u32 = null,
+};
+/// Per-selection observations use document graphemes. Strings borrow the snapshot owner.
+pub const Selection = struct {
+    cursor_anchor: u32,
+    mark_anchor: ?u32,
+    cursor: u32,
+    mark: ?u32,
+    first: u32,
+    last: u32,
+    selection: []const u8,
+    line: u32,
+    col: u32,
+    left: u32,
+    right: u32,
+    up: u32,
+    down: u32,
+    home: u32,
+    end: u32,
+};
 pub const Edit = struct {
-    kind: enum { replace, move, undo, redo },
+    kind: enum { replace, move, undo, redo, batch, selections, add_next },
+    edits: []const CursorEdit = &.{},
     origin: u32,
     interaction_origin: u32,
     source: []const u8,
@@ -54,6 +83,13 @@ pub const BufferInfo = struct {
     dirty: bool,
 };
 pub const Snapshot = struct {
+    /// Frees only text/selection observations copied by the adapter; name/path remain borrowed.
+    pub fn deinitText(self: Snapshot, allocator: std.mem.Allocator) void {
+        allocator.free(self.selection);
+        for (self.selections) |value| allocator.free(value.selection);
+        allocator.free(self.selections);
+    }
+    selections: []const Selection = &.{},
     buffer: u32,
     name: []const u8,
     path: ?[]const u8,

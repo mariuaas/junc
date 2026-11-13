@@ -27,6 +27,11 @@ pub fn main(init: std.process.Init) !void {
         .runtime_directory = init.environ_map.get("JUNC_RUNTIME_DIR"),
     });
     defer connection.deinit();
+    // Report after terminal restoration, while the connection's failure state is still alive.
+    defer if (!connection.connected()) std.log.scoped(.client).err(
+        "Lost connection to junc server {d}; reopen junc to reconnect.",
+        .{connection.server_pid},
+    );
     try connection.open(.{ .path = path });
     var editor = try junc.Editor.init(allocator, &connection);
     defer editor.deinit();

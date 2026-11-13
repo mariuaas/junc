@@ -151,6 +151,23 @@ pub fn draw(self: *Surface, editor: *junc.Editor, win: vaxis.Window) !void {
             win.writeCell(x, y, cell);
         }
     }
+    // End-of-line secondary carets need a cell even where there is no text grapheme.
+    if (editor.minibuffer.context == null) for (state.selections) |selection| {
+        if (selection.cursor_anchor == state.cursor_anchor) continue;
+        if (selection.line < top or selection.line - top >= rows) continue;
+        const line = lineIn(view, selection.line) orelse continue;
+        if (selection.cursor != line.end) continue;
+        const column = columnOf(win, view, line, selection.cursor);
+        if (column < left or column >= left + columns) continue;
+        const x: u16 = @intCast(column - left + gutter);
+        const y: u16 = @intCast(selection.line - top);
+        var cell = win.readCell(x, y) orelse vaxis.Cell{};
+        cell.style = style(theme.cursor_fg, theme.cursor_bg);
+        cell.style.bold = true;
+        cell.style.ul_style = .single;
+        cell.style.reverse = self.monochrome;
+        win.writeCell(x, y, cell);
+    };
     if (status_rows > 0) {
         const status_win = win.child(.{ .y_off = rows, .height = 1 });
         status_win.fill(.{ .style = style(theme.status_fg, theme.status_bg) });
@@ -218,6 +235,8 @@ fn drawRows(self: *Surface, editor: *junc.Editor, view: *const protocol.View, wi
             .last = last,
             .cursor = if (editor.minibuffer.context == null) options.position else null,
             .left = options.left,
+            .selections = editor.connection.current().selections,
+            .show_cursors = editor.minibuffer.context == null,
         });
     }
 }
@@ -229,6 +248,8 @@ const Row = struct {
     last: u32,
     cursor: ?u32,
     left: u32,
+    selections: []const protocol.Selection = &.{},
+    show_cursors: bool = true,
 };
 
 // Cells borrow the view's text; tokens style graphemes below selection and cursor.
@@ -247,7 +268,13 @@ fn drawLine(
     while (position < line.end) : (position += 1) {
         const cluster = grapheme(view, position);
         const cells = width(win, cluster, column);
-        const selected = position >= row.first and position < row.last;
+        var selected = position >= row.first and position < row.last;
+        var secondary = false;
+        for (row.selections) |selection| {
+            if (position >= selection.first and position < selection.last) selected = true;
+            if (row.show_cursors and position == selection.cursor and position != row.cursor) secondary = true;
+        }
+        const caret = position == row.cursor or secondary;
         var cell_style = style(theme.fg, theme.bg);
         if (junc.syntax.categoryAt(view.tokens, position)) |category| {
             const token = frame.syntax[@intFromEnum(category)];
@@ -258,10 +285,14 @@ fn drawLine(
         }
         // Complete overrides: cursor > selection > syntax > base, including attributes.
         if (selected) cell_style = style(theme.selection_fg, theme.selection_bg);
-        if (position == row.cursor) cell_style = style(theme.cursor_fg, theme.cursor_bg);
+        if (caret) cell_style = style(theme.cursor_fg, theme.cursor_bg);
+        if (secondary) {
+            cell_style.bold = true;
+            cell_style.ul_style = .single;
+        }
         if (self.monochrome) {
-            cell_style.reverse = selected or position == row.cursor;
-            if (position == row.cursor) cell_style.bold = true;
+            cell_style.reverse = selected or caret;
+            if (caret) cell_style.bold = true;
         }
         if (column >= row.left and column + cells <= row.left + columns) {
             const x: u16 = @intCast(column - row.left + row.gutter);

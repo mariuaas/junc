@@ -41,7 +41,29 @@ function M.execute(name, c, text)
   end
   return intent
 end
+-- Map an ordinary per-cursor intent into one atomic batch. Context origins stay at the observation.
+function M.each(c, fn)
+  if not c.selections or #c.selections<=1 then return fn(c) end
+  local edits = {}
+  for _, selection in ipairs(c.selections) do
+    local one = {}
+    for k,v in pairs(c) do if k~='selections' then one[k]=v end end
+    for k,v in pairs(selection) do one[k]=v end
+    local action = fn(one) or {kind='keep'}
+    assert(action.origin==nil or action.origin==c.revision, 'Mixed document origins')
+    assert(action.interaction_origin==nil or action.interaction_origin==c.interaction_revision,
+      'Mixed interaction origins')
+    assert(action.buffer_id==nil or action.buffer_id==c.buffer_id, 'Mixed buffer identities')
+    action.cursor_anchor = selection.cursor_anchor
+    edits[#edits+1] = action
+  end
+  return {kind='batch', edits=edits, origin=c.revision,
+    interaction_origin=c.interaction_revision, buffer_id=c.buffer_id}
+end
 function M.replace(c, text, first, last)
+  if first==nil and last==nil and c.selections and #c.selections>1 then
+    return M.each(c, function(one) return M.replace(one, text) end)
+  end
   return {kind='replace', start=first or c.first, finish=last or c.last, text=text,
     origin=c.revision, interaction_origin=c.interaction_revision, buffer_id=c.buffer_id}
 end
@@ -55,23 +77,27 @@ M.command('paste', function(c, text)
   M.cancel_key_sequence()
   return M.replace(c, (text:gsub('\r\n','\n'):gsub('\r','\n')))
 end, {description='Insert pasted text as one edit', category='editing'})
-M.command('backspace', function(c)
+M.command('backspace', function(c) return M.each(c, function(c)
   if c.first ~= c.last then return M.replace(c, '') end
   if c.cursor > 0 then return M.replace(c, '', c.cursor-1, c.cursor) end
-end)
-M.command('delete', function(c)
+end) end)
+M.command('delete', function(c) return M.each(c, function(c)
   if c.first ~= c.last then return M.replace(c, '') end
   if c.cursor < c.count then return M.replace(c, '', c.cursor, c.cursor+1) end
-end)
+end) end)
 M.command('enter', function(c) return M.replace(c, '\n') end)
 M.command('tab', function(c) return M.replace(c, '\t') end)
 for _, direction in ipairs({'left','right','up','down','home','end'}) do
   local d = direction
-  M.command(d, function(c) return M.move(c, c[d]) end)
-  M.command('select-'..d, function(c) return M.move(c, c[d], true) end)
+  M.command(d, function(c) return M.each(c, function(one) return M.move(one, one[d]) end) end)
+  M.command('select-'..d, function(c) return M.each(c, function(one) return M.move(one, one[d], true) end) end)
   M.bind(d, d); M.bind('shift-'..d, 'select-'..d)
 end
-M.command('select-all', function(c) return {kind='move', position=c.count, mark=0} end)
+M.command('select-all', function(c)
+  if c.surface=='minibuffer' then return {kind='move',position=c.count,mark=0} end
+  return {kind='selections', edits={
+    {kind='move', cursor_anchor=c.cursor_anchor, position=c.count, mark=0}}}
+end)
 for _, name in ipairs({'quit','reload','undo','redo'}) do
   local n = name
   M.command(n, function() return {kind=n} end)
@@ -108,8 +134,8 @@ M.command('describe-command', function()
 end, {description='Describe a registered command and its bindings', category='help'})
 M.bind('alt-x', 'execute-command'); M.bind('ctrl-o', 'execute-command')
 M.bind('alt-colon', 'lua-repl'); M.bind('ctrl-l', 'lua-repl')
-M.command('buffer-start', function(c) return M.move(c, 0) end)
-M.command('buffer-end', function(c) return M.move(c, c.count) end)
+M.command('buffer-start', function(c) return M.each(c, function(one) return M.move(one, 0) end) end)
+M.command('buffer-end', function(c) return M.each(c, function(one) return M.move(one, c.count) end) end)
 M.command('forward-char', M.commands.right, {description='Move one grapheme forward', category='motion'})
 M.command('backward-char', M.commands.left, {description='Move one grapheme backward', category='motion'})
 M.command('next-line', M.commands.down, {description='Move to the same column on the next line', category='motion'})
@@ -120,7 +146,9 @@ M.command('beginning-of-buffer', M.commands['buffer-start'], {description='Move 
 M.command('end-of-buffer', M.commands['buffer-end'], {description='Move to the end of the buffer', category='motion'})
 local function page(c, position, top, extend)
   if c.surface=='document' then M.scroll(top) end
-  return M.move(c, position, extend)
+  return M.each(c, function(one)
+    return M.move(one, math.max(0,math.min(c.count,one.cursor+position-c.cursor)), extend)
+  end)
 end
 M.command('page-down', function(c) return page(c, c.page_down, c.page_down_top) end,
   {description='Move down by one screen, keeping the cursor in the window', category='motion'})
@@ -131,6 +159,29 @@ M.command('select-page-up', function(c) return page(c, c.page_up, c.page_up_top,
 M.command('scroll-up', M.commands['page-down'], {description='Emacs name for page-down', category='motion'})
 M.command('scroll-down', M.commands['page-up'], {description='Emacs name for page-up', category='motion'})
 M.command('delete-char', M.commands.delete, {description='Delete the next grapheme, or the selection', category='editing'})
+local function add_cursor(c, direction)
+  local edits, seen = {}, {}
+  for _, one in ipairs(c.selections) do
+    edits[#edits+1]={kind='move', cursor_anchor=one.cursor_anchor, position=one.cursor, mark=one.mark}
+    seen[one.cursor]=true
+  end
+  for _, one in ipairs(c.selections) do
+    local at = one[direction]
+    if not seen[at] then edits[#edits+1]={kind='move',position=at}; seen[at]=true end
+  end
+  return {kind='selections', edits=edits}
+end
+M.command('cursor-add-above', function(c) return add_cursor(c,'up') end,
+  {description='Add a cursor on the preceding line', category='selection'})
+M.command('cursor-add-below', function(c) return add_cursor(c,'down') end,
+  {description='Add a cursor on the following line', category='selection'})
+M.command('cursor-add-next', function() return {kind='add_next'} end,
+  {description='Select the word, then add its next exact occurrence', category='selection'})
+M.command('cursor-single', function(c)
+  return {kind='selections', edits={{kind='move',cursor_anchor=c.cursor_anchor,position=c.cursor,mark=c.mark}}}
+end, {description='Keep only the primary cursor', category='selection'})
+M.bind('ctrl-x up','cursor-add-above'); M.bind('ctrl-x down','cursor-add-below')
+M.bind('ctrl-x d','cursor-add-next'); M.bind('ctrl-x 1','cursor-single')
 M.command('keyboard-quit', function()
   M.cancel_key_sequence()
   return {kind='key-feedback', message='Quit'}

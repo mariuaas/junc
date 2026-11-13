@@ -1,7 +1,8 @@
 -- Presentation policy. No document mutation API is exposed to these callbacks.
 local function classic_status(s)
-  return string.format(' junc | %s%s | %d:%d r%d i%d | %s | ^P minimal ^R reload',
-    (s.name or s.path), s.dirty and ' *' or '', s.line, s.column,
+  local cursors = s.cursor_count>1 and string.format(" [%d cursors]",s.cursor_count) or ""
+  return string.format(' junc | %s%s%s | %d:%d r%d i%d | %s | ^P minimal ^R reload',
+    (s.name or s.path), s.dirty and ' *' or '', cursors, s.line, s.column,
     s.revision, s.interaction_revision, s.message)
 end
 return {
@@ -53,7 +54,7 @@ return {
       status_visible = true,
       status = function(s)
         return string.format(' %s%s  %d:%d  %s', (s.name or s.path), s.dirty and ' +' or '',
-          s.line, s.column, s.message)
+          s.line, s.column, s.message)..(s.cursor_count>1 and (' ['..s.cursor_count..']') or '')
       end,
     },
   },

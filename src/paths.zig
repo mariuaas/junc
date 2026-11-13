@@ -112,6 +112,30 @@ pub const Runtime = struct {
         return fd;
     }
 
+    /// Opens private append-only daemon diagnostics without following links or truncating data.
+    /// Returns an owned descriptor above stderr; the caller closes it after spawn.
+    pub fn openLog(self: *const Runtime) !c_int {
+        var buffer: [std.fs.max_path_bytes]u8 = undefined;
+        const path = try std.fmt.bufPrintZ(&buffer, "{s}/server.log", .{self.directory});
+        var fd = c.open(path, c.O_CREAT | c.O_WRONLY | c.O_APPEND | c.O_NOFOLLOW |
+            c.O_CLOEXEC | c.O_NONBLOCK, @as(c_uint, 0o600));
+        if (fd < 0) return error.ServerLogOpenFailed;
+        if (fd < 3) {
+            const copy = c.fcntl(fd, c.F_DUPFD_CLOEXEC, @as(c_int, 3));
+            _ = c.close(fd);
+            if (copy < 0) return error.ServerLogOpenFailed;
+            fd = copy;
+        }
+        errdefer _ = c.close(fd);
+        var stat: c.struct_stat = undefined;
+        if (c.fstat(fd, &stat) != 0 or stat.st_mode & c.S_IFMT != c.S_IFREG or
+            stat.st_uid != c.getuid() or stat.st_mode & 0o777 != 0o600 or stat.st_nlink != 1)
+        {
+            return error.UnsafeServerLog;
+        }
+        return fd;
+    }
+
     /// No caller may remove an existing endpoint until it holds the lifetime startup lock.
     pub fn checkSocket(self: *const Runtime) !bool {
         var stat: c.struct_stat = undefined;

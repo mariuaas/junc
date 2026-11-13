@@ -106,6 +106,8 @@ fn ignoreHangup(_: c_int) callconv(.c) void {}
 
 fn spawn(executable: [:0]const u8, runtime: *const paths.Runtime, lock: c_int) !void {
     const argv = [_:null]?[*:0]const u8{ executable.ptr, "--serve", "3", runtime.directory.ptr };
+    const log_fd = try runtime.openLog();
+    defer _ = c.close(log_fd);
     const descriptor_limit = c.sysconf(c._SC_OPEN_MAX);
     if (descriptor_limit < 4 or descriptor_limit > std.math.maxInt(c_int)) return error.ServerFdLimitFailed;
     const child = c.fork();
@@ -119,9 +121,11 @@ fn spawn(executable: [:0]const u8, runtime: *const paths.Runtime, lock: c_int) !
         if (detached != 0) c._exit(0);
         const null_fd = c.open("/dev/null", c.O_RDWR);
         if (null_fd < 0) c._exit(126);
-        for (0..3) |index| {
+        for (0..2) |index| {
             if (c.dup2(null_fd, @intCast(index)) < 0) c._exit(126);
         }
+        if (c.dup2(log_fd, 2) < 0) c._exit(126);
+        _ = c.close(log_fd);
         if (null_fd > 2) _ = c.close(null_fd);
         if (lock != 3) {
             if (c.dup2(lock, 3) < 0) c._exit(126);
@@ -246,11 +250,14 @@ pub fn pollInvalidations(self: *Connection) !bool {
     if (self.transport == .in_process) return self.needs_refresh;
     if (!self.connected()) return error.ConnectionLost;
     errdefer self.disconnect();
-    while (try self.nextFrame(false)) |frame| {
+    while (true) {
+        const frame = (self.nextFrame(false) catch |err| switch (err) {
+            error.EndOfStream, error.SocketReadFailed => return error.ConnectionLost,
+            else => return err,
+        }) orelse return self.needs_refresh;
         defer frame.deinit();
         try self.notice(frame.value);
     }
-    return self.needs_refresh;
 }
 
 /// Success returns an owning decoded response; the caller must deinit it. Failure can replace

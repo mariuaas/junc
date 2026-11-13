@@ -133,6 +133,8 @@ with tempfile.TemporaryDirectory(prefix='junc-paste-') as directory, DaemonRunti
         os.kill(pid, signal.SIGTERM)
         terminal.restored(success=False)
         assert b'\x1b[?2004l' in terminal.output
+        assert b'Lost connection to junc server' in terminal.output
+        assert b'error: EndOfStream' not in terminal.output
     finally:
         terminal.close()
 

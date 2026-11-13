@@ -120,6 +120,7 @@ pub fn reloadSources(self: *Editor, extension: ?[]const u8, presentation: ?[]con
 pub fn presentationContext(self: *const Editor) Presentation.Context {
     const state = self.connection.current();
     return .{
+        .cursor_count = @intCast(state.selections.len),
         .path = state.path orelse "[scratch]",
         .name = state.name,
         .buffer_id = state.buffer,
@@ -305,7 +306,7 @@ pub fn cancelMinibuffer(self: *Editor) !void {
 pub fn pushCommandContext(self: *Editor, focus: Focus) !void {
     const paging = try self.pages(focus);
     const context = try self.snapshot(focus);
-    defer self.allocator.free(context.selection);
+    defer context.deinitText(self.allocator);
     self.pushContext(focus, context, paging);
 }
 
@@ -318,12 +319,25 @@ pub fn scroll(self: *Editor, top: u32) void {
     self.viewport.top = @min(top, max_top);
 }
 
-// Selection is owned through the editor allocator; other strings borrow their observation.
+// Selection observations are owned through the editor allocator; names/path borrow the view.
 fn snapshot(self: *Editor, focus: Focus) !protocol.Snapshot {
     switch (focus) {
         .document => {
             var state = self.connection.current();
             state.selection = try self.allocator.dupe(u8, state.selection);
+            errdefer self.allocator.free(state.selection);
+            const selections = try self.allocator.alloc(protocol.Selection, state.selections.len);
+            var initialized: usize = 0;
+            errdefer {
+                for (selections[0..initialized]) |value| self.allocator.free(value.selection);
+                self.allocator.free(selections);
+            }
+            for (state.selections, selections) |source, *copy| {
+                copy.* = source;
+                copy.selection = try self.allocator.dupe(u8, source.selection);
+                initialized += 1;
+            }
+            state.selections = selections;
             return state;
         },
         .minibuffer => return self.minibuffer.snapshot(self.allocator),
@@ -411,6 +425,23 @@ fn pushContext(self: *Editor, focus: Focus, context: protocol.Snapshot, paging: 
             bool => lua.lua_pushboolean(state, @intFromBool(value)),
             []const u8 => string(state, value),
             ?[]const u8 => if (value) |text| string(state, text) else lua.lua_pushnil(state),
+            []const protocol.Selection => {
+                lua.lua_createtable(state, @intCast(value.len), 0);
+                for (value, 0..) |selection, index| {
+                    lua.lua_createtable(state, 0, 16);
+                    inline for (std.meta.fields(protocol.Selection)) |item| {
+                        const entry = @field(selection, item.name);
+                        switch (item.type) {
+                            u32 => lua.lua_pushinteger(state, entry),
+                            ?u32 => if (entry) |n| lua.lua_pushinteger(state, n) else lua.lua_pushnil(state),
+                            []const u8 => string(state, entry),
+                            else => @compileError("Unsupported selection field"),
+                        }
+                        lua.lua_setfield(state, -2, item.name);
+                    }
+                    lua.lua_rawseti(state, -2, @intCast(index + 1));
+                }
+            },
             else => @compileError("Unsupported command snapshot field"),
         }
         const name = if (comptime std.mem.eql(u8, field.name, "buffer")) "buffer_id" else field.name;
@@ -458,7 +489,7 @@ fn run(
     defer lua.lua_settop(self.state, if (self.state == state) top else 0);
     const paging = try self.pages(focus);
     const context = try self.snapshot(focus);
-    defer self.allocator.free(context.selection);
+    defer context.deinitText(self.allocator);
     // Origins are captured before Lua runs; a command that switches buffers cannot restamp them.
     const before: intent.Origins = .{
         .buffer = context.buffer,
@@ -476,7 +507,9 @@ fn run(
     }
     if (lua.lua_type(state, -1) == lua.LUA_TNIL) return null;
     if (lua.lua_type(state, -1) != lua.LUA_TTABLE) return error.InvalidCommand;
-    const action = decode(state, lua.lua_gettop(state), focus, before) catch |err| {
+    var decode_arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer decode_arena.deinit();
+    const action = decode(decode_arena.allocator(), state, lua.lua_gettop(state), focus, before) catch |err| {
         if (err == error.LuaError) self.reportLuaError(state);
         return err;
     };
@@ -484,7 +517,7 @@ fn run(
 }
 
 // Field reads can run Lua metamethods, so a kind unavailable in the minibuffer reads none.
-fn decode(state: *lua.lua_State, table: c_int, focus: Focus, before: intent.Origins) !Action {
+fn decode(allocator: std.mem.Allocator, state: *lua.lua_State, table: c_int, focus: Focus, before: intent.Origins) !Action {
     const kind = try intent.kind(state, table);
     if (focus == .minibuffer and !(if (kind) |value| value.availableInMinibuffer() else false)) {
         return error.UnavailableInMinibuffer;
@@ -501,8 +534,8 @@ fn decode(state: *lua.lua_State, table: c_int, focus: Focus, before: intent.Orig
             ) orelse return error.InvalidCommand,
         },
         .presentation => .{ .presentation = try intent.string(state, table, "name") },
-        .replace, .move, .undo, .redo => |edit_kind| .{
-            .edit = try intent.edit(state, table, edit_kind, before),
+        .replace, .move, .undo, .redo, .batch, .selections, .add_next => |edit_kind| .{
+            .edit = try intent.edit(allocator, state, table, edit_kind, before),
         },
     };
 }

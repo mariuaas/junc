@@ -77,6 +77,9 @@ def exercise(language):
             if language == 'zig':
                 send(b'// edited\r')
                 send(b'\x1a\x19\x13')  # undo, redo, save
+                deadline = time.monotonic() + 5
+                while not (root / path).read_text().startswith('// edited\n') and time.monotonic() < deadline:
+                    drain(.05)
                 assert (root / path).read_text().startswith('// edited\n')
                 send(b'\x1b[B' * 30)
                 snapshot()

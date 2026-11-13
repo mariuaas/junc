@@ -73,8 +73,8 @@ pub fn position(self: *Minibuffer) !u32 {
     return self.target().position();
 }
 
-/// Command context for Lua. Only selection is allocated through allocator; other strings are
-/// static.
+/// Command context for Lua. Selection observations belong to allocator; release with
+/// Snapshot.deinitText. Name/path strings are static.
 pub fn snapshot(self: *Minibuffer, allocator: std.mem.Allocator) !protocol.Snapshot {
     return local.snapshot(allocator, self.target(), .{
         .id = 0,

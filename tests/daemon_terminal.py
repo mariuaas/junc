@@ -154,6 +154,10 @@ return p
             time.sleep(.02)
         terminal.send(b'x')
         terminal.restored(success=False)
+        diagnostic = b'Lost connection to junc server'
+        assert diagnostic in terminal.output
+        assert b'error: EndOfStream' not in terminal.output
+        assert terminal.output.index(diagnostic) > terminal.output.index(b'\x1b[?1049l')
     finally:
         terminal.close()
     terminal = Terminal(root, daemon, 'observer.txt')

@@ -250,7 +250,7 @@ pub const Attachment = struct {
         return self.select(registry, id);
     }
 
-    /// Only selection is allocated through arena; other strings borrow the selected buffer.
+    /// Selection observations are allocated through arena; names/path borrow the selected buffer.
     pub fn snapshot(
         self: *Attachment,
         registry: *Registry,

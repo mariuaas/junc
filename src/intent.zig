@@ -16,13 +16,16 @@ pub const Kind = enum {
     move,
     undo,
     redo,
+    batch,
+    selections,
+    add_next,
 
     /// The minibuffer edits its own input and can reload or switch prompts; other client actions
     /// need the document focused.
     pub fn availableInMinibuffer(self: Kind) bool {
         return switch (self) {
-            .replace, .move, .undo, .redo, .reload, .minibuffer, .@"key-feedback" => true,
-            .quit, .save, .presentation => false,
+            .replace, .move, .undo, .redo, .batch, .reload, .minibuffer, .@"key-feedback" => true,
+            .quit, .save, .presentation, .selections, .add_next => false,
         };
     }
 };
@@ -48,7 +51,13 @@ pub fn string(state: *lua.lua_State, table: c_int, name: [:0]const u8) ![]const 
 
 /// Decodes a document edit without restamping explicitly captured observation origins. A named
 /// buffer other than origins.buffer is BufferChanged; malformed fields are InvalidCommand.
-pub fn edit(state: *lua.lua_State, table: c_int, edit_kind: Kind, origins: Origins) !protocol.Edit {
+pub fn edit(
+    allocator: std.mem.Allocator,
+    state: *lua.lua_State,
+    table: c_int,
+    edit_kind: Kind,
+    origins: Origins,
+) !protocol.Edit {
     if (try optionalNumber(state, table, "buffer_id")) |id| {
         if (id != origins.buffer) return error.BufferChanged;
     }
@@ -58,6 +67,9 @@ pub fn edit(state: *lua.lua_State, table: c_int, edit_kind: Kind, origins: Origi
             .move => .move,
             .undo => .undo,
             .redo => .redo,
+            .batch => .batch,
+            .selections => .selections,
+            .add_next => .add_next,
             else => return error.InvalidCommand,
         },
         .origin = (try optionalNumber(state, table, "origin")) orelse origins.revision,
@@ -76,7 +88,44 @@ pub fn edit(state: *lua.lua_State, table: c_int, edit_kind: Kind, origins: Origi
             result.position = try number(state, table, "position");
             result.mark = try optionalNumber(state, table, "mark");
         },
-        .undo, .redo => {},
+        .batch, .selections => {
+            try pushField(state, table, "edits");
+            if (lua.lua_type(state, -1) != lua.LUA_TTABLE) return error.InvalidCommand;
+            const list = lua.lua_gettop(state);
+            const length = lua.lua_objlen(state, list);
+            if (length == 0 or length > std.math.maxInt(c_int)) return error.InvalidCommand;
+            const edits = try allocator.alloc(protocol.CursorEdit, length);
+            for (edits, 0..) |*value, index| {
+                lua.lua_rawgeti(state, list, @intCast(index + 1));
+                if (lua.lua_type(state, -1) != lua.LUA_TTABLE) return error.InvalidCommand;
+                const item = lua.lua_gettop(state);
+                value.* = .{
+                    .kind = std.meta.stringToEnum(
+                        @FieldType(protocol.CursorEdit, "kind"),
+                        try string(state, item, "kind"),
+                    ) orelse return error.InvalidCommand,
+                    .cursor_anchor = (try optionalNumber(state, item, "cursor_anchor")) orelse 0,
+                };
+                switch (value.kind) {
+                    .replace => {
+                        value.start = try number(state, item, "start");
+                        value.finish = try number(state, item, "finish");
+                        value.text = try string(state, item, "text");
+                        if (!std.unicode.utf8ValidateSlice(value.text)) return error.InvalidUtf8;
+                    },
+                    .move => {
+                        value.position = try number(state, item, "position");
+                        value.mark = try optionalNumber(state, item, "mark");
+                    },
+                    .keep => {},
+                }
+                // Release each Lua item after copying its only borrowed payload into the arena.
+                value.text = try allocator.dupe(u8, value.text);
+                lua.lua_settop(state, list);
+            }
+            result.edits = edits;
+        },
+        .undo, .redo, .add_next => {},
     }
     return result;
 }

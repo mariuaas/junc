@@ -63,6 +63,10 @@ The pinned engine uses copy-on-write piece-tree transactions: committed nodes re
 
 junc consumes this guarantee rather than implementing rollback itself. Its integration tests do not independently exhaust every allocation point in Litura. Filesystem save atomicity remains separate: a failed synchronous write may leave partial file contents even though the saved revision and stored path stay unchanged.
 
+### Simultaneous ranges from a cursor set
+
+Multiple cursors add a hosting question distinct from historical rebasing. Every cursor observes the same document revision, but sequential buffer operations can change the grapheme boundaries of a later operation's original range. Descending order is sufficient for separated ranges; it does not define all touching-range cases under contextual resegmentation. junc merges deletions and identical edits, and rejects other touching/overlapping replacements before submission. [The cursor-set contract](multicursor.md#editing-order-and-collisions) gives a concrete example and the smallest plausible upstream extension: transaction-local resolution of origin-based ranges. This is not a defect in Litura's declared sequential-operation semantics, and junc does not introduce its own splice projection.
+
 ## Verification boundaries
 
 `tests/server_test.zig` exercises the same registry and submission adapter as the daemon. `tests/minibuffer_test.zig` covers captured origins and wrong-buffer rejection through Lua. `tests/multiclient_test.py` exercises separate real connections, racing requests, passive anchor/selection movement, mandatory origins, coherent observations, partial frames, backpressure, shared lifetimes and shutdown protection. `tests/multiclient_terminal.py` drives two real libvaxis PTYs, including idle invalidation redraw, edits, global undo, independent Lua definitions/themes, reload, resize, peer detach and terminal restoration.

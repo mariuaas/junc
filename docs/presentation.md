@@ -32,7 +32,7 @@ status = function(s)
 end,
 ```
 
-The status snapshot includes canonical `path`, display `name`, stable `buffer_id`, `message`, `dirty`, `cursor`, optional `mark`, one-based `line` and `column`, grapheme `count`, `lines`, `revision`, `interaction_revision`, `preset`, terminal `width` and `height`, and zero-based viewport `top` (line) and `left` (cell). Document positions and columns are Litura graphemes. The viewport's horizontal offset is terminal cells. These are copied observations, not document handles.
+The status snapshot includes canonical `path`, display `name`, stable `buffer_id`, `message`, `dirty`, `cursor`, optional `mark`, one-based `line` and `column`, grapheme `count`, `cursor_count`, `lines`, `revision`, `interaction_revision`, `preset`, terminal `width` and `height`, and zero-based viewport `top` (line) and `left` (cell). Document positions and columns are Litura graphemes. The viewport's horizontal offset is terminal cells. These are copied observations, not document handles.
 
 ## Terminal colors
 
@@ -55,3 +55,5 @@ Zig continues to own cell layout, width measurement, clipping, tab stops, scroll
 ## Verification
 
 `zig build test` covers defaults, reported colors, preset switching, successful replacement, malformed modules (including inactive presets), and late callback failure. It checks document/session/selection/viewport/history preservation. `python3 tests/presentation_terminal.py` drives a real PTY, rewrites theme and status code while open, checks emitted RGB colors and status state, switches the gutter, rejects failed reloads, performs undo, resizes and verifies terminal restoration. It supplies color-query replies; the existing `tests/terminal.py` exercises unanswered queries and ordinary editing.
+
+Secondary carets use the existing cursor foreground/background with bold and underline, including at line ends. All session selections override syntax colors; carets override selections. The primary cursor determines viewport following. Presentation callbacks receive `cursor_count`, and both shipped presets display it while more than one cursor is active.

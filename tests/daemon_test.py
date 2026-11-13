@@ -54,6 +54,7 @@ with tempfile.TemporaryDirectory(prefix='junc-files-') as directory, DaemonRunti
     assert stat.S_IMODE(daemon.directory.stat().st_mode) == 0o700
     assert stat.S_IMODE((daemon.directory / 'session.sock').stat().st_mode) == 0o600
     assert stat.S_IMODE((daemon.directory / 'server.lock').stat().st_mode) == 0o600
+    assert stat.S_IMODE((daemon.directory / 'server.log').stat().st_mode) == 0o600
     assert (daemon.directory / 'session.sock').stat().st_uid == os.getuid()
     probe = Connection(daemon.directory, attach=False)
     assert probe.hello['server_pid'] == pid and probe.hello['busy']
@@ -123,6 +124,10 @@ with tempfile.TemporaryDirectory(prefix='junc-files-') as directory, DaemonRunti
     owner.socket.sendall(struct.pack('<I', 0xffffffff))
     assert owner.socket.recv(1) == b''
     owner.close()
+    deadline = time.monotonic() + 2
+    while 'InvalidFrameLength' not in (daemon.directory / 'server.log').read_text() and time.monotonic() < deadline:
+        time.sleep(.02)
+    assert 'InvalidFrameLength' in (daemon.directory / 'server.log').read_text()
     # A later invocation from another cwd still selects this same server and canonical document.
     other = root / 'elsewhere'
     other.mkdir()

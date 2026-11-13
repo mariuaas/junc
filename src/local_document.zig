@@ -28,7 +28,8 @@ pub const Target = struct {
     }
 };
 
-/// Captures authoritative observations; only selection is allocated through the supplied allocator.
+/// Captures authoritative observations. Selection strings and the selection array belong to
+/// allocator; release them with Snapshot.deinitText. Name/path borrow the buffer.
 pub fn snapshot(
     allocator: std.mem.Allocator,
     target: Target,
@@ -42,7 +43,45 @@ pub fn snapshot(
     const lc = try document.positionToLineCol(position);
     const selection = try document.getTextRange(first, last);
     defer document.allocator.free(selection);
+    const values = try document.querySelections(document.allocator, target.session);
+    defer document.allocator.free(values);
+    const observations = try allocator.alloc(protocol.Selection, values.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (observations[0..initialized]) |value| allocator.free(value.selection);
+        allocator.free(observations);
+    }
+    for (values, observations) |value, *observation| {
+        const active = if (value.active == .start) value.start else value.end;
+        const fixed = if (value.active == .start) value.end else value.start;
+        const at = active.position orelse return error.DeadCursor;
+        const fixed_at = if (value.isCaret()) null else fixed.position;
+        const start = @min(at, fixed_at orelse at);
+        const finish = @max(at, fixed_at orelse at);
+        const line_col = try document.positionToLineCol(at);
+        const text = try document.getTextRange(start, finish);
+        defer document.allocator.free(text);
+        observation.* = .{
+            .mark_anchor = if (value.isCaret()) null else fixed.anchor.value,
+            .cursor_anchor = active.anchor.value,
+            .cursor = at,
+            .mark = fixed_at,
+            .first = start,
+            .last = finish,
+            .selection = try allocator.dupe(u8, text),
+            .line = line_col.line,
+            .col = line_col.col,
+            .left = at -| 1,
+            .right = @min(at + 1, document.graphemeCount()),
+            .up = try target.linePosition(line_col.line -| 1, line_col.col),
+            .down = try target.linePosition(@min(line_col.line + 1, document.lineCount() - 1), line_col.col),
+            .home = try document.lineStart(line_col.line),
+            .end = try document.lineEnd(line_col.line, false),
+        };
+        initialized += 1;
+    }
     return .{
+        .selections = observations,
         .buffer = info.id,
         .name = info.name,
         .path = info.path,
@@ -136,51 +175,7 @@ pub fn submit(target: Target, edit: protocol.Edit) !litura.types.SubmitResult {
         intent.payload = if (edit.kind == .undo) .{ .undo = .{} } else .{ .redo = .{} };
         return target.document.submit(intent);
     }
-    var parts: [2]litura.types.IntentPayload = undefined;
-    var part_count: usize = 0;
-    var buffer_ops: [1]litura.types.BufferOp = undefined;
-    if (edit.kind == .replace) {
-        if (!std.unicode.utf8ValidateSlice(edit.text)) return error.InvalidUtf8;
-        buffer_ops[0] = .{
-            .replace = .{
-                .start = edit.start,
-                .end = edit.finish,
-                .text = edit.text,
-            },
-        };
-        parts[0] = .{ .buffer_mutation = .{ .ops = &buffer_ops } };
-        part_count = 1;
-    }
-    const at: litura.types.Target = if (edit.kind == .replace)
-        .{ .edit = .{ .op = 0, .edge = .end } }
-    else
-        .{ .position = edit.position };
-    const cursor: litura.types.Endpoint = .{ .move = .{ .anchor = target.cursor, .to = at } };
-    var fixed: litura.types.Endpoint = .{ .new = .{ .position = edit.mark orelse 0 } };
-    if (edit.kind == .move and edit.mark != null) {
-        const previous = try target.document.querySelections(target.document.allocator, target.session);
-        defer target.document.allocator.free(previous);
-        for (previous) |selection| {
-            if (selection.isCaret()) continue;
-            const anchor = if (selection.start.anchor.value == target.cursor.value)
-                selection.end.anchor
-            else
-                selection.start.anchor;
-            fixed = .{ .move = .{ .anchor = anchor, .to = .{ .position = edit.mark.? } } };
-        }
-    }
-    const selections = [_]litura.types.SelectionSpec{if (edit.kind == .move and edit.mark != null)
-        .{ .start = fixed, .end = cursor, .active = .end }
-    else
-        .{ .start = cursor }};
-    const interactions = [_]litura.types.InteractionOp{.{ .set_selections = .{ .selections = &selections } }};
-    parts[part_count] = .{ .interaction_mutation = .{
-        .session_id = target.session,
-        .origin = edit.interaction_origin,
-        .ops = &interactions,
-    } };
-    intent.payload = .{ .composite = .{ .parts = parts[0 .. part_count + 1] } };
-    return target.document.submit(intent);
+    return @import("selection_edit.zig").submit(target, edit, intent);
 }
 
 /// Projects a canonical result into junc's compact command summary; this is not an event stream.

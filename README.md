@@ -42,6 +42,11 @@ Arrow keys move, Shift selects, typing edits. Bracketed paste inserts text as on
 | Ctrl-R | Reload Lua commands and presentation |
 | Ctrl-X Ctrl-P | Switch between Classic and Minimal |
 | Ctrl-X h | Select all |
+| Ctrl-X Up / Down | Add a cursor above / below |
+| Ctrl-X d | Select the word, then add its next match |
+| Ctrl-X 1 | Keep only the primary cursor |
+
+[Multiple cursors](docs/multicursor.md) share one undoable edit; their selections live in Litura.
 
 M-x gives you `open-file`, `switch-buffer`, `save-as` and friends. Tab completes; Escape or Ctrl-G gets you out of a prompt. Several terminals can share the same buffers, each with its own cursor and Lua setup. The local server starts automatically and keeps unsaved buffers after you detach. [How that works](docs/daemon.md).
 

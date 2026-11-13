@@ -36,6 +36,7 @@ pub const Terminal = struct {
 pub const Viewport = struct { width: u32 = 80, height: u32 = 24, top: u32 = 0, left: u32 = 0 };
 /// Borrowed observation strings remain valid through resolve/validate; Lua receives copied strings.
 pub const Context = struct {
+    cursor_count: u32 = 1,
     buffer_id: u32,
     name: []const u8,
     path: []const u8,

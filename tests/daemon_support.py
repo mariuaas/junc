@@ -9,7 +9,7 @@ import tempfile
 import time
 
 # Must match protocol.version in src/protocol.zig.
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 def wait_ready(process, output, drain):
     """Auto-spawn adds startup work: wait for actual terminal initialization instead of a fixed delay."""

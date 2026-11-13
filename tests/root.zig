@@ -241,6 +241,7 @@ test "deleting a separator collapses the cursor onto the joined cluster" {
 }
 
 comptime {
+    _ = @import("multicursor_test.zig");
     _ = @import("migration_test.zig");
     _ = @import("paste_test.zig");
     _ = @import("presentation_test.zig");
