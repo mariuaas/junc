@@ -219,10 +219,28 @@ test "an unavailable provider falls back without repeated refresh attempts in th
     try std.testing.expectEqual(junc.Syntax.State.unavailable, cache.state);
     try std.testing.expectEqual(@as(usize, 1), cache.refresh_count);
     try std.testing.expectEqual(@as(usize, 0), cache.spans.len);
-    var edit = try document.submit(.{ .payload = .{ .buffer_mutation = .{
+    var edit = try document.submit(.{ .id = .{ .value = 1 }, .origin = document.revision, .payload = .{ .buffer_mutation = .{
         .ops = &.{.{ .insert = .{ .pos = 0, .text = " " } }},
     } } });
     defer edit.deinit(allocator);
     try cache.update(&document, range);
     try std.testing.expectEqual(@as(usize, 2), cache.refresh_count);
+}
+
+test "interaction and lifecycle blocks leave the current syntax tree fresh" {
+    if (comptime !junc.litura.tree_sitter_enabled) return error.SkipZigTest;
+    const fixture = try Fixture.create(allocator, "local value = 1", "navigation.lua");
+    defer fixture.destroy();
+    try update(fixture);
+    const cache = &fixture.buffer().syntax;
+    const refreshes = cache.refresh_count;
+    try command(&fixture.editor, "shift-right", "");
+    try update(fixture);
+    var peer: junc.Registry.Attachment = .{ .allocator = allocator };
+    _ = try peer.select(&fixture.host.registry, fixture.buffer().id);
+    peer.deinit(&fixture.host.registry);
+    try update(fixture);
+    try std.testing.expectEqual(junc.Syntax.State.ready, cache.state);
+    try std.testing.expectEqual(refreshes, cache.refresh_count);
+    try std.testing.expectEqual(@as(u32, 0), fixture.document().revision);
 }

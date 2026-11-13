@@ -39,13 +39,12 @@ const History = struct { namespace: []u8, text: []u8 };
 pub fn init(allocator: std.mem.Allocator) !Minibuffer {
     var document = try litura.BufferEngine.init(allocator);
     errdefer document.deinit();
-    const cursor = try document.createAnchor(0, .sticky);
-    const session = try document.createSession(&.{cursor});
+    const created = try local.createSession(&document);
     return .{
         .allocator = allocator,
         .document = document,
-        .cursor = cursor,
-        .session = session,
+        .cursor = created.cursor,
+        .session = created.session,
         .view_arena = .init(allocator),
     };
 }
@@ -90,7 +89,7 @@ pub fn snapshot(self: *Minibuffer, allocator: std.mem.Allocator) !protocol.Snaps
 pub fn submit(self: *Minibuffer, allocator: std.mem.Allocator, edit: protocol.Edit) !submission.Result {
     var result = try local.submit(self.target(), edit);
     defer result.deinit(self.document.allocator);
-    return submission.copy(allocator, local.event(result));
+    return submission.copy(allocator, local.event(result, edit, self.session));
 }
 
 /// Observes the cursor's line for rendering, with the same view shape as a hosted document.

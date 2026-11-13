@@ -120,7 +120,7 @@ pub fn handle(
             }
             var result = try local.submit(target, edit);
             defer result.deinit(registry.allocator);
-            var event = local.event(result);
+            var event = local.event(result, edit, target.session);
             event.source = try arena.dupe(u8, event.source);
             event.message = try arena.dupe(u8, event.message);
             response.event = event;

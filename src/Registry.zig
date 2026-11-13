@@ -211,11 +211,13 @@ pub const Attachment = struct {
                 std.log.scoped(.server).err("detaching missing buffer: {s}", .{@errorName(err)});
                 continue;
             };
-            buffer.document.dropSession(visit.session, visit.cursor) catch |err| {
+            var block = buffer.document.dropSession(.{ .id = local.requestId(), .session = visit.session }) catch |err| {
                 std.log.scoped(.server).err("dropping interaction session: {s}", .{
                     @errorName(err),
                 });
+                continue;
             };
+            block.deinit(registry.allocator);
         }
         self.visits.deinit(self.allocator);
         self.* = undefined;
@@ -235,11 +237,9 @@ pub const Attachment = struct {
             }
         }
         try self.visits.ensureUnusedCapacity(self.allocator, 1);
-        const cursor = try buffer.document.createAnchor(0, .sticky);
-        errdefer buffer.document.dropAnchor(cursor) catch |err| {
-            std.log.scoped(.server).err("rolling back cursor: {s}", .{@errorName(err)});
-        };
-        const session = try buffer.document.createSession(&.{cursor});
+        const created = try local.createSession(&buffer.document);
+        const cursor = created.cursor;
+        const session = created.session;
         self.visits.appendAssumeCapacity(.{ .buffer = id, .cursor = cursor, .session = session });
         self.selected = id;
         return .{ .document = &buffer.document, .cursor = cursor, .session = session };

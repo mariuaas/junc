@@ -13,8 +13,14 @@ pub const Target = struct {
     }
 
     pub fn mark(self: Target) !?u32 {
-        const anchor = try self.document.querySessionMark(self.session, self.cursor) orelse return null;
-        return (try self.document.queryAnchor(anchor)).position;
+        const selections = try self.document.querySelections(self.document.allocator, self.session);
+        defer self.document.allocator.free(selections);
+        for (selections) |selection| {
+            if (selection.isCaret()) continue;
+            if (selection.start.anchor.value == self.cursor.value) return selection.end.position;
+            if (selection.end.anchor.value == self.cursor.value) return selection.start.position;
+        }
+        return null;
     }
 
     pub fn linePosition(self: Target, line: u32, column: u32) !u32 {
@@ -120,9 +126,10 @@ pub fn submit(target: Target, edit: protocol.Edit) !litura.types.SubmitResult {
         return error.StaleInteractionRevision;
     }
     var intent: litura.types.Intent = .{
+        .id = requestId(),
         .origin = edit.origin,
-        .source = edit.source,
-        .cause = "lua-command",
+        .source = .{ .extension = "junc.lua" },
+        .label = edit.source,
         .payload = undefined,
     };
     if (edit.kind == .undo or edit.kind == .redo) {
@@ -144,16 +151,29 @@ pub fn submit(target: Target, edit: protocol.Edit) !litura.types.SubmitResult {
         parts[0] = .{ .buffer_mutation = .{ .ops = &buffer_ops } };
         part_count = 1;
     }
-    const interactions = [_]litura.types.InteractionOp{.{ .place_cursor = .{
-        .cursor = target.cursor,
-        .at = if (edit.kind == .replace)
-            .{ .edit = .{ .op = 0, .edge = .end } }
-        else
-            .{ .position = edit.position },
-        .mark = if (edit.kind == .move and edit.mark != null) .{
-            .position = edit.mark.?,
-        } else null,
-    } }};
+    const at: litura.types.Target = if (edit.kind == .replace)
+        .{ .edit = .{ .op = 0, .edge = .end } }
+    else
+        .{ .position = edit.position };
+    const cursor: litura.types.Endpoint = .{ .move = .{ .anchor = target.cursor, .to = at } };
+    var fixed: litura.types.Endpoint = .{ .new = .{ .position = edit.mark orelse 0 } };
+    if (edit.kind == .move and edit.mark != null) {
+        const previous = try target.document.querySelections(target.document.allocator, target.session);
+        defer target.document.allocator.free(previous);
+        for (previous) |selection| {
+            if (selection.isCaret()) continue;
+            const anchor = if (selection.start.anchor.value == target.cursor.value)
+                selection.end.anchor
+            else
+                selection.start.anchor;
+            fixed = .{ .move = .{ .anchor = anchor, .to = .{ .position = edit.mark.? } } };
+        }
+    }
+    const selections = [_]litura.types.SelectionSpec{if (edit.kind == .move and edit.mark != null)
+        .{ .start = fixed, .end = cursor, .active = .end }
+    else
+        .{ .start = cursor }};
+    const interactions = [_]litura.types.InteractionOp{.{ .set_selections = .{ .selections = &selections } }};
     parts[part_count] = .{ .interaction_mutation = .{
         .session_id = target.session,
         .origin = edit.interaction_origin,
@@ -163,20 +183,50 @@ pub fn submit(target: Target, edit: protocol.Edit) !litura.types.SubmitResult {
     return target.document.submit(intent);
 }
 
-pub fn event(result: litura.types.SubmitResult) protocol.Event {
-    return switch (result) {
-        .edit_event => |value| .{
-            .kind = .edit_event,
-            .old_revision = value.old_revision,
-            .new_revision = value.new_revision,
-            .source = value.source,
+/// Projects a canonical result into junc's compact command summary; this is not an event stream.
+/// Strings borrow result. A transition without edit/interaction events reports unchanged interaction revisions.
+pub fn event(result: litura.types.SubmitResult, edit: protocol.Edit, session: u32) protocol.Event {
+    switch (result) {
+        .rejected => |value| return .{ .kind = .validation_report, .message = value.message },
+        .committed => |block| {
+            const transition = block.transition;
+            if (transition.edit) |value| return .{
+                .kind = .edit_event,
+                .old_revision = value.old_revision,
+                .new_revision = value.new_revision,
+                .source = transition.label orelse "",
+            };
+            for (transition.interactions) |value| {
+                if (value.session == session) return .{
+                    .kind = .interaction_result,
+                    .old_revision = value.old_revision,
+                    .new_revision = value.new_revision,
+                    .session = session,
+                };
+            }
+            return .{
+                .kind = .interaction_result,
+                .old_revision = edit.interaction_origin,
+                .new_revision = edit.interaction_origin,
+                .session = session,
+            };
         },
-        .interaction_result => |value| .{
-            .kind = .interaction_result,
-            .old_revision = value.old_revision,
-            .new_revision = value.new_revision,
-            .session = value.session_id,
-        },
-        .validation_report => |value| .{ .kind = .validation_report, .message = value.message },
-    };
+    }
+}
+
+/// Host-local correlation identity, independent of wire request ordering. No retry/dedup promise.
+pub fn requestId() litura.types.IntentId {
+    return .random(std.Io.Threaded.global_single_threaded.io());
+}
+
+/// Creates the single caret used by junc. The session owns its endpoint; the block is released here.
+pub fn createSession(document: *litura.BufferEngine) !struct { session: u32, cursor: litura.anchors.AnchorId } {
+    var block = try document.createSession(.{
+        .id = requestId(),
+        .origin = document.revision,
+        .selections = &.{.{ .start = .{ .new = .{ .position = 0 } } }},
+    });
+    defer block.deinit(document.allocator);
+    const created = block.lifecycle.change.session_created;
+    return .{ .session = created.session, .cursor = created.selections[0].start.anchor };
 }

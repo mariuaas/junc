@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
             _ = try litura.tree_sitter.TreeSitterTokenProvider.attachTokensBuiltin(&document, language);
             const first = try query(init.io, &document);
             const cached = try query(init.io, &document);
-            var result = try document.submit(.{ .payload = .{ .buffer_mutation = .{
+            var result = try document.submit(.{ .id = .{ .value = 1 }, .origin = document.revision, .payload = .{ .buffer_mutation = .{
                 .ops = &.{.{ .insert = .{ .pos = 0, .text = " " } }},
             } } });
             defer result.deinit(init.gpa);

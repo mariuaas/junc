@@ -116,13 +116,13 @@ test "stale interaction submissions are rejected through Litura public API" {
     const origin = try fixture.document().interactionRevision(fixture.session());
     var move = (try editor.dispatch("right", "")).?;
     defer move.deinit(std.testing.allocator);
-    var stale = try fixture.document().submit(.{ .payload = .{ .interaction_mutation = .{
+    var stale = try fixture.document().submit(.{ .id = .{ .value = 1 }, .payload = .{ .interaction_mutation = .{
         .session_id = fixture.session(),
         .origin = origin,
-        .ops = &.{.{ .move_cursor_anchor = .{ .cursor = fixture.cursor(), .position = 3 } }},
+        .ops = &.{.{ .set_selections = .{ .selections = &.{.{ .start = .{ .move = .{ .anchor = fixture.cursor(), .to = .{ .position = 3 } } } }} } }},
     } }, .origin = fixture.document().revision });
     defer stale.deinit(std.testing.allocator);
-    try std.testing.expect(stale == .validation_report);
+    try std.testing.expect(stale == .rejected);
     try std.testing.expectEqual(@as(u32, 1), editor.position());
 }
 
@@ -241,6 +241,7 @@ test "deleting a separator collapses the cursor onto the joined cluster" {
 }
 
 comptime {
+    _ = @import("migration_test.zig");
     _ = @import("paste_test.zig");
     _ = @import("presentation_test.zig");
     _ = @import("syntax_test.zig");
