@@ -1,6 +1,7 @@
 //! Authoritative host without a daemon: one registry and one attachment answering requests through
 //! the same server handlers. Tests and other embedders attach a Connection to it.
 const std = @import("std");
+const litura = @import("litura");
 const protocol = @import("protocol.zig");
 const server = @import("server.zig");
 const Registry = @import("Registry.zig");
@@ -11,6 +12,7 @@ registry: Registry,
 attachment: Registry.Attachment,
 /// Buffer created by init and selected before the first request.
 initial_buffer: u32,
+generation: u64 = 0,
 
 /// Creates a registry holding one clean buffer with text. A relative path resolves against the
 /// working directory, like a terminal argument, and is used for identity and syntax detection; it
@@ -38,6 +40,18 @@ pub fn deinit(self: *InProcessHost) void {
     self.* = undefined;
 }
 
+/// Embedders drive cooperative work explicitly, outside request handling. A completion advances
+/// the same coalescible observation generation used by socket-host invalidations.
+pub fn maintain(self: *InProcessHost, budget: litura.views.RefreshBudget) !bool {
+    const id = self.attachment.selected orelse return false;
+    const buffer = try self.registry.get(id);
+    if (try buffer.syntax.maintain(&buffer.document, budget)) {
+        self.generation += 1;
+        return true;
+    }
+    return false;
+}
+
 fn absolutePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const io = std.Io.Threaded.global_single_threaded.io();
     const cwd = try std.process.currentPathAlloc(io, allocator);
@@ -57,6 +71,7 @@ pub fn call(
     defer arena.deinit();
     var response = server.respond(&self.registry, &self.attachment, arena.allocator(), request);
     response.server_pid = 0;
+    response.generation = self.generation;
     const bytes = try std.json.Stringify.valueAlloc(allocator, response, .{});
     defer allocator.free(bytes);
     if (bytes.len > protocol.frame_bytes_max) return error.FrameTooLarge;

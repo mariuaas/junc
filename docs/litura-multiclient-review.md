@@ -4,13 +4,13 @@ Two terminals can share document text while keeping separate cursors and Lua pol
 
 ## Integration status
 
-junc pins the published Litura commit [`b1b8c5c4700d7df4c0af9d6556c1765b4ea3ab0b`](https://github.com/mariuaas/litura/commit/b1b8c5c4700d7df4c0af9d6556c1765b4ea3ab0b) by immutable archive URL and Zig package hash. The application builds against that fetched package, without a sibling-checkout override.
+junc pins the published Litura commit [`781dac1dc57f44c1dbdfc6c9cceda5df1aa5a06f`](https://github.com/mariuaas/litura/commit/781dac1dc57f44c1dbdfc6c9cceda5df1aa5a06f) by immutable archive URL and Zig package hash. The application builds against that fetched package, without a sibling-checkout override.
 
 Main-document edits, in-process commands and native minibuffer replacements share `src/local_document.zig`. It uses `set_selections` with `EditRef` for replacement endpoints and positional targets for navigation. Sessions own their endpoints; lifecycle requests return owned blocks that junc releases after recording the session and cursor identities. No client-side splice planning or endpoint projection remains. The two-client regressions assert that peer edits, undo and redo rebase anchors without advancing interaction revisions. That distinction matters because an unchanged interaction revision does not imply unchanged document coordinates.
 
 ## Implemented Litura capabilities
 
-These references describe the pinned [SPEC](https://github.com/mariuaas/litura/blob/b1b8c5c4700d7df4c0af9d6556c1765b4ea3ab0b/docs/buffer-protocol/SPEC.md) and [transaction tests](https://github.com/mariuaas/litura/blob/b1b8c5c4700d7df4c0af9d6556c1765b4ea3ab0b/tests/transaction_test.zig). The named tests provide upstream contract evidence; junc's consumer and PTY tests exercise the integration separately.
+These references describe the pinned [SPEC](https://github.com/mariuaas/litura/blob/781dac1dc57f44c1dbdfc6c9cceda5df1aa5a06f/docs/buffer-protocol/SPEC.md) and [transaction tests](https://github.com/mariuaas/litura/blob/781dac1dc57f44c1dbdfc6c9cceda5df1aa5a06f/tests/transaction_test.zig). The named tests provide upstream contract evidence; junc's consumer and PTY tests exercise the integration separately.
 
 | Capability | SPEC contract | Upstream regression evidence |
 | --- | --- | --- |
@@ -22,6 +22,8 @@ These references describe the pinned [SPEC](https://github.com/mariuaas/litura/b
 For ordinary replacement junc submits one composite: buffer operation 0 replaces the requested range, followed by `set_selections` moving the existing cursor to `.{ .edit = .{ .op = 0, .edge = .end } }` as a caret, omitting the old mark. Navigation uses a positional target. Litura resolves Unicode contextual resegmentation and projects the inserted endpoint; junc must not calculate a new grapheme coordinate from inserted bytes, standalone grapheme counts or its own splice model.
 
 The symbolic target addresses the result of this transaction. The replacement range is still calculated from an observed revision, so the document origin remains mandatory. Symbolic positioning cannot make an old edit range current.
+
+The syntax migration adds byte offsets and row/byte-column points to canonical splices. junc's hosting protocol still projects blocks into command summaries and immutable views; it does not copy or reconstruct those native splices. Providers receive them directly from Litura. View refresh runs in cooperative daemon idle slices, separate from submissions and token/node queries. Ready input takes priority; completion emits coalescible view invalidations. Stale views carry current text without old tokens, and no size cutoff disables highlighting. The migration tests check stale rejection, a halted parse resumed by the host, numeric revision-bound node references and Unicode byte/point metadata; see [syntax highlighting](syntax.md) for scheduling policy and costs.
 
 ## What the host establishes
 
@@ -59,7 +61,7 @@ SPEC §7.2 applies when a client maintains speculative state and an in-flight in
 
 ### Allocation-failure guarantees
 
-The pinned engine uses copy-on-write piece-tree transactions: committed nodes remain untouched, and rollback discards candidate nodes and restores anchor state without allocating. Interaction preparation reserves endpoint/session identities and owned blocks before publication. Upstream `tests/allocation_failure_test.zig` and `tests/transaction_test.zig` cover transient and persistent exhaustion, including splits, undo/redo, interaction-only changes, composites and session creation. The previously reported allocating-rollback and tree-insertion hazards are addressed; see the pinned [known issues](https://github.com/mariuaas/litura/blob/b1b8c5c4700d7df4c0af9d6556c1765b4ea3ab0b/docs/known-issues.md) for the current contract and costs.
+The pinned engine uses copy-on-write piece-tree transactions: committed nodes remain untouched, and rollback discards candidate nodes and restores anchor state without allocating. Interaction preparation reserves endpoint/session identities and owned blocks before publication. Upstream `tests/allocation_failure_test.zig` and `tests/transaction_test.zig` cover transient and persistent exhaustion, including splits, undo/redo, interaction-only changes, composites and session creation. The previously reported allocating-rollback and tree-insertion hazards are addressed; see the pinned [known issues](https://github.com/mariuaas/litura/blob/781dac1dc57f44c1dbdfc6c9cceda5df1aa5a06f/docs/known-issues.md) for the current contract and costs.
 
 junc consumes this guarantee rather than implementing rollback itself. Its integration tests do not independently exhaust every allocation point in Litura. Filesystem save atomicity remains separate: a failed synchronous write may leave partial file contents even though the saved revision and stored path stay unchanged.
 

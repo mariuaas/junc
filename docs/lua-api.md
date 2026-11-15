@@ -23,7 +23,7 @@ The read-only snapshot includes `selections` (one observation per Litura selecti
 
 Bracketed paste invokes the Lua `paste` command once on the focused document or minibuffer. The default command replaces the selection, normalizes CRLF and CR line endings to LF, and clears any pending key prefix. Pasted tabs, newlines and control bytes are text, so they cannot trigger bindings or submit a minibuffer prompt. Empty paste does nothing. You can redefine `paste` through the ordinary command registry; its edits use the same revision-checked submission path as typing.
 
-The terminal reader enables bracketed-paste mode and collects its payload before asking Lua to edit. It uses libvaxis's parser and capability handling for ordinary terminal events, while paste bytes bypass key decoding and enter the document in one transaction. An unfinished paste is discarded on disconnect; no partial edits are submitted. Terminals that do not send bracketed paste retain ordinary key handling. Syntax providers still perform their existing synchronous refresh after the edit, rather than once per pasted character.
+The terminal reader enables bracketed-paste mode and collects its payload before asking Lua to edit. It uses libvaxis's parser and capability handling for ordinary terminal events, while paste bytes bypass key decoding and enter the document in one transaction. An unfinished paste is discarded on disconnect; no partial edits are submitted. Terminals that do not send bracketed paste retain ordinary key handling. The daemon schedules stale syntax maintenance in cooperative idle slices after the edit; submission and view requests never parse. Litura reuses its previous syntax tree, and completion invalidates the view without changing document or interaction revisions.
 
 Commands return nil or a declarative intent table:
 
@@ -52,7 +52,7 @@ Tests exercise ordinary insertion and an independently defined equivalent insert
 
 These tests exercise the shared public submission path for local input and hosted main-document edits. Complete conformance with Litura’s draft Extension Reflection Principle requires additional mechanisms. Lua snapshot evaluation happens in the editor, outside `bufferEval`; it is not isolated, fuel-metered evaluation. Extensions cannot intercept pending intents, register guards through this adapter, or subscribe to a canonical event stream. `on_result` observes command-adapter submissions in this instance only. Native input replacement for opening contexts, history and completion also submits to Litura, but does not call this command observer.
 
-At pinned Litura revision `b1b8c5c4700d7df4c0af9d6556c1765b4ea3ab0b`:
+At pinned Litura revision `781dac1dc57f44c1dbdfc6c9cceda5df1aa5a06f`:
 
 - Sessions own selection endpoints. The adapter retains the active cursor identity, reuses the fixed endpoint while extending a selection, and lets Litura release omitted endpoints when collapsing it. Replacement positions use symbolic edit references; no client-side grapheme projection is involved.
 - Every native request has an opaque 128-bit identity. The adapter generates it at submission, records `.extension = "junc.lua"` as the typed source, and uses the Lua command name as the descriptive label. These identities correlate native results; they do not promise deduplication or exactly-once execution.

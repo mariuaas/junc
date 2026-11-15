@@ -177,7 +177,8 @@ pub fn save(self: *Registry, id: u32, path: ?[]const u8) !void {
     buffer.name = name;
 }
 
-/// Produces an immutable, revision-stamped view with this buffer's syntax tokens.
+/// Produces an immutable, revision-stamped view with current tokens when available. Stale syntax
+/// returns empty tokens; this observation never attaches a parser or performs maintenance.
 /// All returned slices belong to the caller's arena; text and offsets are observations, not a
 /// replica.
 pub fn view(self: *Registry, arena: std.mem.Allocator, request: protocol.Request) !protocol.View {

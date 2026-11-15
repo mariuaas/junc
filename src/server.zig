@@ -232,6 +232,7 @@ const Client = struct {
 
 const clients_max = 64;
 const progress_timeout_ms = 5000;
+const syntax_slice_ms = 4;
 
 const Host = struct {
     allocator: std.mem.Allocator,
@@ -239,12 +240,48 @@ const Host = struct {
     clients: std.ArrayListUnmanaged(Client) = .empty,
     generation: u64 = 0,
     stopping: bool = false,
+    syntax_index: usize = 0,
 
     fn deinit(self: *Host) void {
         for (self.clients.items) |*client| client.deinit(&self.registry);
         self.clients.deinit(self.allocator);
         self.registry.deinit();
         self.* = undefined;
+    }
+
+    // Only observed buffers selected by live clients receive background work. Round-robin order
+    // gives a large parse no more than one cooperative slice before another buffer's turn.
+    fn nextSyntaxBuffer(self: *const Host) ?usize {
+        const buffers = self.registry.buffers.items;
+        for (0..buffers.len) |offset| {
+            const index = (self.syntax_index + offset) % buffers.len;
+            const buffer = buffers[index];
+            if (!buffer.syntax.needsMaintenance(&buffer.document)) continue;
+            for (self.clients.items) |client| {
+                if (client.attached and !client.closed and !client.closing and
+                    client.attachment.selected == buffer.id)
+                {
+                    return index;
+                }
+            }
+        }
+        return null;
+    }
+
+    fn maintainSyntax(self: *Host) !void {
+        const index = self.nextSyntaxBuffer() orelse return;
+        const buffer = self.registry.buffers.items[index];
+        self.syntax_index = (index + 1) % self.registry.buffers.items.len;
+        var deadline: SyntaxDeadline = .{ .until_ms = (try nowMs()) + syntax_slice_ms };
+        const ready = buffer.syntax.maintain(&buffer.document, .{
+            .context = &deadline,
+            .exhausted = SyntaxDeadline.exhausted,
+        }) catch |err| {
+            log.warn("syntax maintenance unavailable: {s}", .{@errorName(err)});
+            return;
+        };
+        if (deadline.clock_failed) return error.MonotonicClockUnavailable;
+        if (ready) self.invalidate(-1, buffer.id);
     }
 
     fn attachedCount(self: *const Host) usize {
@@ -454,6 +491,20 @@ const Host = struct {
     }
 };
 
+const SyntaxDeadline = struct {
+    until_ms: i64,
+    clock_failed: bool = false,
+
+    fn exhausted(context: ?*anyopaque) bool {
+        const self: *SyntaxDeadline = @ptrCast(@alignCast(context.?));
+        const now = nowMs() catch {
+            self.clock_failed = true;
+            return true;
+        };
+        return now >= self.until_ms;
+    }
+};
+
 /// Independent attachments share authoritative documents. Per-connection framing and output are
 /// bounded;
 /// a slow or partial peer never blocks another client. SIGTERM remains explicit nonpersistent
@@ -488,7 +539,7 @@ pub fn run(allocator: std.mem.Allocator, runtime: *const paths.Runtime, lock_fd:
             .events = if (client.outgoing != null) c.POLLOUT else c.POLLIN,
             .revents = 0,
         };
-        var timeout: c_int = 100;
+        var timeout: c_int = if (host.nextSyntaxBuffer() != null) 0 else 100;
         for (host.clients.items) |client| {
             if (client.pending != null and client.outgoing == null) {
                 timeout = 0;
@@ -521,6 +572,21 @@ pub fn run(allocator: std.mem.Allocator, runtime: *const paths.Runtime, lock_fd:
             host.accept(listener, now) catch |err| {
                 log.warn("accept rejected: {s}", .{@errorName(err)});
             };
+        }
+        if (host.nextSyntaxBuffer() != null) {
+            // Recheck after servicing this turn: more input may already be queued, including a
+            // new connection or another frame from a client whose response just finished.
+            try polls.resize(allocator, host.clients.items.len + 1);
+            polls.items[0] = .{ .fd = listener, .events = c.POLLIN, .revents = 0 };
+            for (host.clients.items, polls.items[1..]) |client, *item| item.* = .{
+                .fd = client.fd,
+                .events = c.POLLIN,
+                .revents = 0,
+            };
+            const ready = c.poll(polls.items.ptr, @intCast(polls.items.len), 0);
+            if (ready < 0) {
+                if (wire.errno() != c.EINTR) return error.ServerPollFailed;
+            } else if (ready == 0) try host.maintainSyntax();
         }
         if (host.attachedCount() == 0 and !host.registry.dirty() and now - last_activity >= idle_ms) return;
     }

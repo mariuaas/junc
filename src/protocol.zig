@@ -2,8 +2,8 @@
 const std = @import("std");
 const syntax = @import("syntax.zig");
 
-/// Version 4 adds session selection observations and atomic multi-cursor requests.
-pub const version = 4;
+/// Version 5 exposes stale syntax views while maintenance is scheduled independently.
+pub const version = 5;
 pub const frame_bytes_max = 64 * 1024 * 1024;
 pub const Op = enum {
     hello,

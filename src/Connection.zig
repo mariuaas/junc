@@ -247,7 +247,13 @@ fn notice(self: *Connection, response: protocol.Response) !void {
 /// Consumes only coalescible hosting hints while idle. No document command is synthesized or
 /// retried.
 pub fn pollInvalidations(self: *Connection) !bool {
-    if (self.transport == .in_process) return self.needs_refresh;
+    if (self.transport == .in_process) {
+        if (self.transport.in_process.generation > self.observed_generation) {
+            self.needs_refresh = true;
+            self.view_invalidated = true;
+        }
+        return self.needs_refresh;
+    }
     if (!self.connected()) return error.ConnectionLost;
     errdefer self.disconnect();
     while (true) {

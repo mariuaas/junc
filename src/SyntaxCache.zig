@@ -2,14 +2,13 @@
 //! owns the spans copied into views. Clients render those spans and never own a cache.
 const std = @import("std");
 const litura = @import("litura");
-const options = @import("build_options");
 const syntax = @import("syntax.zig");
 const Category = syntax.Category;
 const Syntax = @This();
 
 allocator: std.mem.Allocator,
 language: ?Language = null,
-max_bytes: usize = options.syntax_max_bytes,
+requested: bool = false,
 spans: []Span = &.{},
 revision: ?u32 = null,
 start: u32 = 0,
@@ -20,10 +19,10 @@ query_count: usize = 0,
 refresh_count: usize = 0,
 
 pub const State = syntax.State;
-pub const Language = enum { zig, lua, fennel };
+pub const Language = enum { zig, lua };
 pub const Span = syntax.Span;
 const languages = .{
-    .{ ".zig", Language.zig }, .{ ".lua", Language.lua }, .{ ".fnl", Language.fennel },
+    .{ ".zig", Language.zig }, .{ ".lua", Language.lua },
 };
 
 /// Extension matching is explicit and case-sensitive. Scratch and unknown paths remain plain.
@@ -54,10 +53,6 @@ fn clear(self: *Syntax) void {
 /// Attaches only the token facade, without parsing. Provider lifetime belongs to the document.
 pub fn attach(self: *Syntax, document: *litura.BufferEngine) !void {
     const language = self.language orelse return;
-    if (self.max_bytes != 0 and document.byteCount() > self.max_bytes) {
-        self.state = .large;
-        return;
-    }
     if (comptime litura.tree_sitter_enabled) {
         if (!document.hasViewProvider("tokens")) {
             const attached = try litura.tree_sitter.TreeSitterTokenProvider.attachTokensBuiltin(
@@ -69,59 +64,77 @@ pub fn attach(self: *Syntax, document: *litura.BufferEngine) !void {
     }
 }
 
-/// Queries one contiguous grapheme range for visible rows, once per revision/range.
-/// Allocates normalized spans; a stale provider can allocate and parse the entire document
-/// synchronously.
-/// A stale query rebuilds the entire provider; same-revision queries and palette changes do not.
-/// Failure clears stale styling and is not retried until the document revision changes.
-pub fn update(self: *Syntax, document: *litura.BufferEngine, range: litura.types.Range) !void {
-    if (self.language == null) return;
-    if (self.max_bytes != 0 and document.byteCount() > self.max_bytes) {
-        self.clear();
-        self.state = .large;
-        return;
-    }
-    if (self.failed_revision == document.revision) return;
-    self.attach(document) catch |err| {
+/// True only for requested syntax that still needs maintenance. No allocation or parsing.
+pub fn needsMaintenance(self: *const Syntax, document: *litura.BufferEngine) bool {
+    if (!self.requested or self.language == null or self.failed_revision == document.revision) return false;
+    const view = document.queryViewState("tokens");
+    return view.kind == .stale or (litura.tree_sitter_enabled and view.kind == .absent);
+}
+
+/// One host-scheduled cooperative step. True means current-revision syntax became ready and
+/// observers should invalidate their cached views. Stale is resumable, not a failure.
+pub fn maintain(self: *Syntax, document: *litura.BufferEngine, budget: litura.views.RefreshBudget) !bool {
+    if (!self.needsMaintenance(document)) return false;
+    errdefer {
         self.clear();
         self.failed_revision = document.revision;
         self.state = .unavailable;
-        return err;
-    };
+    }
+    try self.attach(document);
+    const before = document.queryViewState("tokens");
+    if (before.kind == .absent or before.kind == .unavailable) {
+        self.failed_revision = document.revision;
+        self.state = .unavailable;
+        return false;
+    }
+    self.refresh_count += 1;
+    const view = document.refreshView("tokens", budget);
+    if ((view.kind == .available or view.kind == .partial) and view.revision == document.revision) {
+        return true;
+    }
+    self.clear();
+    self.state = .stale;
+    if (view.kind == .unavailable) {
+        self.failed_revision = document.revision;
+        self.state = .unavailable;
+    }
+    return false;
+}
+
+/// Queries current tokens for visible rows. Never attaches, refreshes or parses. Requests
+/// maintenance on first use; stale coordinates are discarded and the text renders unstyled.
+pub fn update(self: *Syntax, document: *litura.BufferEngine, range: litura.types.Range) !void {
+    self.requested = true;
+    if (self.language == null) return;
     const view = document.queryViewState("tokens");
-    if (view.kind == .absent) {
+    if (view.kind == .absent and !litura.tree_sitter_enabled) {
         self.clear();
         self.state = .plain;
         return;
     }
-    if (self.revision == document.revision and self.start == range.start and
-        self.end == range.end and (view.kind == .available or view.kind == .partial))
-    {
+    if ((view.kind != .available and view.kind != .partial) or view.revision != document.revision) {
+        self.clear();
+        self.state = if (view.kind == .unavailable or self.failed_revision == document.revision)
+            .unavailable
+        else
+            .stale;
         return;
     }
+    if (self.failed_revision == document.revision) return;
+    if (self.revision == document.revision and self.start == range.start and self.end == range.end) return;
     self.clear();
-    self.failed_revision = document.revision;
-    self.state = .unavailable;
+    errdefer {
+        self.failed_revision = document.revision;
+        self.state = .unavailable;
+    }
     self.query_count += 1;
-    if (view.kind == .stale) self.refresh_count += 1;
     const tokens = try document.queryTokenSpans(range.start, range.end, document.revision);
     defer document.allocator.free(tokens);
-    const refreshed = document.queryViewState("tokens");
-    if ((refreshed.kind != .available and refreshed.kind != .partial) or
-        refreshed.revision != document.revision)
-    {
-        self.state = .unavailable;
-        return;
-    }
     var spans = try std.ArrayListUnmanaged(Span).initCapacity(self.allocator, tokens.len);
     errdefer spans.deinit(self.allocator);
     for (tokens) |token| {
         const category = Category.fromStyle(token.style) orelse continue;
-        spans.appendAssumeCapacity(.{
-            .start = token.start,
-            .end = token.end,
-            .category = category,
-        });
+        spans.appendAssumeCapacity(.{ .start = token.start, .end = token.end, .category = category });
     }
     self.spans = try spans.toOwnedSlice(self.allocator);
     self.revision = document.revision;

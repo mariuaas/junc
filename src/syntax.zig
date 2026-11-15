@@ -22,7 +22,7 @@ pub const Category = enum {
 pub const category_count = std.meta.fields(Category).len;
 
 /// Highlighting availability for one observed range.
-pub const State = enum { plain, ready, unavailable, large };
+pub const State = enum { plain, ready, unavailable, stale };
 /// Grapheme range [start, end) in document coordinates.
 pub const Span = struct { start: u32, end: u32, category: Category };
 

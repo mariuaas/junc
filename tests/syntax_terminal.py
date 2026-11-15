@@ -97,7 +97,10 @@ def exercise(language):
                 send(b'\x1b[B' * row + b'\x1b[H' + b'\x1b[C' * column)
                 send(b'\x1b[1;2C' * 7)
                 send(b'#123456\x13')
-                assert "keyword = {fg='#123456'" in (root / path).read_text()
+                deadline = time.monotonic() + 5
+                while "keyword = {fg='#123456'" not in (root / path).read_text() and time.monotonic() < deadline:
+                    drain(.05)
+                assert "keyword = {fg='#123456'" in (root / path).read_text(), ((root / path).read_text().splitlines()[row-1:row+2], state(snapshot()), process.poll())
                 before = state(snapshot())
                 send(b'\x12')
                 raw = snapshot()

@@ -43,20 +43,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const options = b.addOptions();
-    const syntax_max_bytes = b.option(
-        usize,
-        "syntax-max-bytes",
-        "Maximum bytes for synchronous highlighting; 0 removes the limit",
-    ) orelse 128 * 1024;
-    options.addOption(usize, "syntax_max_bytes", syntax_max_bytes);
     const module = b.addModule("junc", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    module.addOptions("build_options", options);
     module.addImport("litura", litura.module("litura"));
     module.addImport("lua", c.createModule());
     module.addImport("host_c", host.createModule());

@@ -17,10 +17,11 @@ fn command(editor: *junc.Editor, key: []const u8, text: []const u8) !void {
 
 // Queries the hosted buffer's token cache over the whole document, as a full-height view would.
 fn update(fixture: *Fixture) !void {
-    try fixture.buffer().syntax.update(fixture.document(), .{
-        .start = 0,
-        .end = fixture.document().graphemeCount(),
-    });
+    const range: junc.litura.types.Range = .{ .start = 0, .end = fixture.document().graphemeCount() };
+    try fixture.buffer().syntax.update(fixture.document(), range);
+    _ = try fixture.host.maintain(.unlimited);
+    _ = try fixture.connection.pollInvalidations();
+    try fixture.buffer().syntax.update(fixture.document(), range);
 }
 
 fn window(screen: *vaxis.Screen) vaxis.Window {
@@ -35,17 +36,15 @@ fn window(screen: *vaxis.Screen) vaxis.Window {
     };
 }
 
-test "explicit language registry attaches Litura token providers for Zig Lua and Fennel" {
+test "explicit language registry attaches Litura token providers for Zig and Lua" {
     try std.testing.expectEqual(junc.Syntax.Language.zig, junc.Syntax.detect("src/main.zig").?);
     try std.testing.expectEqual(junc.Syntax.Language.lua, junc.Syntax.detect("style.lua").?);
-    try std.testing.expectEqual(junc.Syntax.Language.fennel, junc.Syntax.detect("code.fnl").?);
     try std.testing.expect(junc.Syntax.detect(null) == null);
     try std.testing.expect(junc.Syntax.detect("notes.txt") == null);
     if (comptime !junc.litura.tree_sitter_enabled) return error.SkipZigTest;
     const samples = [_][2][]const u8{
         .{ "sample.zig", "const value = \"界é\"; // comment\n" },
         .{ "sample.lua", "local value = \"界é\" -- comment\n" },
-        .{ "sample.fnl", "(local value \"界é\") ; comment\n" },
     };
     for (samples) |sample| {
         const fixture = try Fixture.create(allocator, sample[1], sample[0]);
@@ -121,20 +120,12 @@ test "visible token cache refreshes after edit undo redo but not scrolling or co
     try std.testing.expectEqualDeep(before, editor.presentation);
 }
 
-test "unknown languages missing providers and configured size fallback remain editable" {
+test "unknown languages and missing providers remain editable" {
     const unknown_fixture = try Fixture.create(allocator, "text", "notes.txt");
     defer unknown_fixture.destroy();
     const unknown = &unknown_fixture.editor;
     try update(unknown_fixture);
     try std.testing.expect(!unknown_fixture.document().hasViewProvider("tokens"));
-    var document = try junc.litura.BufferEngine.initFromText(allocator, "local x=1", null);
-    defer document.deinit();
-    var cache = junc.Syntax.init(allocator, "sample.lua");
-    defer cache.deinit();
-    cache.max_bytes = 1;
-    try cache.update(&document, .{ .start = 0, .end = document.graphemeCount() });
-    try std.testing.expectEqual(junc.Syntax.State.large, cache.state);
-    try std.testing.expect(!document.hasViewProvider("tokens"));
     if (comptime !junc.litura.tree_sitter_enabled) {
         const missing_fixture = try Fixture.create(allocator, "local x=1", "sample.lua");
         defer missing_fixture.destroy();
@@ -153,6 +144,7 @@ test "Unicode tokens map to cells through grapheme positions with horizontal cli
     const editor = &fixture.editor;
     try editor.setPreset("minimal");
     try command(editor, "end", "");
+    try update(fixture);
     var screen = try vaxis.Screen.init(allocator, .{
         .rows = 3,
         .cols = 24,
@@ -198,13 +190,20 @@ test "Unicode tokens map to cells through grapheme positions with horizontal cli
 test "an unavailable provider falls back without repeated refresh attempts in the same revision" {
     var document = try junc.litura.BufferEngine.initFromText(allocator, "local x=1", null);
     defer document.deinit();
-    var provider: junc.litura.views.StaticTokenProvider = .{ .spans = &.{} };
+    var provider: junc.litura.views.StaticTokenProvider = .{ .spans = &.{}, .stale = true };
     var table = provider.provider().vtable.*;
     const Failing = struct {
-        fn state(_: *anyopaque, _: []const u8, revision: u32) junc.litura.views.ViewState {
-            return .{ .view = "tokens", .revision = revision, .kind = .stale };
+        fn state(ptr: *anyopaque, _: []const u8, revision: u32) junc.litura.views.ViewState {
+            const static: *junc.litura.views.StaticTokenProvider = @ptrCast(@alignCast(ptr));
+            return .{ .view = "tokens", .revision = revision, .kind = if (static.stale) .stale else .unavailable };
         }
-        fn refresh(_: *anyopaque, _: *anyopaque) junc.litura.views.ViewState {
+        fn refresh(
+            ptr: *anyopaque,
+            _: *anyopaque,
+            _: junc.litura.views.RefreshBudget,
+        ) junc.litura.views.ViewState {
+            const static: *junc.litura.views.StaticTokenProvider = @ptrCast(@alignCast(ptr));
+            static.stale = false;
             return .{ .view = "tokens", .revision = null, .kind = .unavailable };
         }
     };
@@ -215,14 +214,19 @@ test "an unavailable provider falls back without repeated refresh attempts in th
     defer cache.deinit();
     const range: junc.litura.types.Range = .{ .start = 0, .end = document.graphemeCount() };
     try cache.update(&document, range);
+    _ = try cache.maintain(&document, .unlimited);
     try cache.update(&document, range);
     try std.testing.expectEqual(junc.Syntax.State.unavailable, cache.state);
     try std.testing.expectEqual(@as(usize, 1), cache.refresh_count);
     try std.testing.expectEqual(@as(usize, 0), cache.spans.len);
+    try std.testing.expectEqual(@as(usize, 0), cache.query_count);
+    try std.testing.expectError(error.ViewUnavailable, document.queryTokenSpans(0, 1, document.revision));
     var edit = try document.submit(.{ .id = .{ .value = 1 }, .origin = document.revision, .payload = .{ .buffer_mutation = .{
         .ops = &.{.{ .insert = .{ .pos = 0, .text = " " } }},
     } } });
     defer edit.deinit(allocator);
+    try cache.update(&document, range);
+    _ = try cache.maintain(&document, .unlimited);
     try cache.update(&document, range);
     try std.testing.expectEqual(@as(usize, 2), cache.refresh_count);
 }
@@ -243,4 +247,108 @@ test "interaction and lifecycle blocks leave the current syntax tree fresh" {
     try std.testing.expectEqual(junc.Syntax.State.ready, cache.state);
     try std.testing.expectEqual(refreshes, cache.refresh_count);
     try std.testing.expectEqual(@as(u32, 0), fixture.document().revision);
+}
+
+test "queries stay stale until the host refreshes and a halted parse resumes through the cache" {
+    if (comptime !junc.litura.tree_sitter_enabled) return error.SkipZigTest;
+    const fixture = try Fixture.create(allocator, "local function f(a) return a * 2 end\n" ** 400, "budget.lua");
+    defer fixture.destroy();
+    const document = fixture.document();
+    const cache = &fixture.buffer().syntax;
+    try cache.attach(document);
+    const before = try document.interactionRevision(fixture.session());
+    try std.testing.expectError(error.ViewStale, document.queryTokenSpans(0, 10, document.revision));
+    try std.testing.expectEqual(junc.litura.views.ViewStateKind.stale, document.queryViewState("tokens").kind);
+    const Spent = struct {
+        fn exhausted(_: ?*anyopaque) bool {
+            return true;
+        }
+    };
+    try std.testing.expectEqual(
+        junc.litura.views.ViewStateKind.stale,
+        document.refreshView("tokens", .{ .exhausted = Spent.exhausted }).kind,
+    );
+    try std.testing.expectError(error.ViewStale, document.queryTokenSpans(0, 10, document.revision));
+    try update(fixture);
+    try std.testing.expectEqual(junc.Syntax.State.ready, cache.state);
+    try std.testing.expect(cache.spans.len > 0);
+    try std.testing.expectEqual(@as(usize, 1), cache.refresh_count);
+    try std.testing.expectEqual(@as(u32, 0), document.revision);
+    try std.testing.expectEqual(before, try document.interactionRevision(fixture.session()));
+}
+
+test "syntax node references are revision values and splice points retain byte coordinates" {
+    if (comptime !junc.litura.tree_sitter_enabled) return error.SkipZigTest;
+    var document = try junc.litura.BufferEngine.initFromText(allocator, "  local value = '界é'\n", null);
+    defer document.deinit();
+    try std.testing.expect(try junc.litura.tree_sitter.TreeSitterTokenProvider.attachBuiltin(&document, "lua"));
+    try std.testing.expectError(error.ViewStale, document.queryEnclosingSyntaxNode(8, document.revision));
+    try std.testing.expectEqual(junc.litura.views.ViewStateKind.available, document.refreshView("syntax", .unlimited).kind);
+    try std.testing.expect(try document.queryEnclosingSyntaxNode(0, document.revision) == null);
+    const node = (try document.queryEnclosingSyntaxNode(8, document.revision)).?;
+    const saved = node.ref;
+    const resolved = try document.querySyntaxNodeInfo(saved);
+    try std.testing.expectEqual(@as(u32, 8), resolved.start);
+    try std.testing.expectEqual(@as(u32, 13), resolved.end);
+    try std.testing.expectEqual(saved.id, resolved.ref.id);
+    var result = try document.submit(.{
+        .id = .{ .value = 77 },
+        .origin = document.revision,
+        .payload = .{ .buffer_mutation = .{ .ops = &.{.{ .insert = .{ .pos = 18, .text = "X\n" } }} } },
+    });
+    defer result.deinit(allocator);
+    const splice = result.committed.transition.edit.?.splices[0];
+    try std.testing.expectEqual(@as(u32, 20), splice.start_byte);
+    try std.testing.expectEqual(@as(u32, 20), splice.start_point.column);
+    try std.testing.expectEqual(@as(u32, 1), splice.new_end_point.row);
+    try std.testing.expectEqual(@as(u32, 0), splice.new_end_point.column);
+    try std.testing.expectError(error.InvalidArgument, document.querySyntaxNodeInfo(saved));
+    try std.testing.expectError(error.ViewStale, document.queryTokenSpans(0, 10, document.revision));
+    _ = document.refreshView("tokens", .unlimited);
+    try std.testing.expectEqual(junc.litura.views.ViewStateKind.available, document.queryViewState("syntax").kind);
+}
+
+test "large views never parse in requests and scheduled completion invalidates cached observations" {
+    if (comptime !junc.litura.tree_sitter_enabled) return error.SkipZigTest;
+    const fixture = try Fixture.create(allocator, "local value = 1\n" ** 10000, "large.lua");
+    defer fixture.destroy();
+    const cache = &fixture.buffer().syntax;
+    const document = fixture.document();
+    try std.testing.expect(document.byteCount() > 128 * 1024);
+    try fixture.connection.prepareView(0, 5);
+    try std.testing.expectEqual(junc.Syntax.State.stale, fixture.connection.view().?.syntax_state);
+    try std.testing.expectEqual(@as(usize, 0), fixture.connection.view().?.tokens.len);
+    try std.testing.expectEqual(@as(usize, 0), cache.refresh_count);
+    try std.testing.expect(!document.hasViewProvider("tokens"));
+    const Spent = struct {
+        fn exhausted(_: ?*anyopaque) bool {
+            return true;
+        }
+    };
+    try std.testing.expect(!try fixture.host.maintain(.{ .exhausted = Spent.exhausted }));
+    try std.testing.expectEqual(@as(?u32, null), cache.failed_revision);
+    try std.testing.expect(document.hasViewProvider("tokens"));
+    try command(&fixture.editor, "text", "-- ");
+    try fixture.connection.prepareView(0, 5);
+    const stale = fixture.connection.view().?;
+    try std.testing.expectEqual(@as(u32, 1), stale.revision);
+    try std.testing.expectEqual(junc.Syntax.State.stale, stale.syntax_state);
+    try std.testing.expectEqual(@as(usize, 0), stale.tokens.len);
+    try std.testing.expectEqual(@as(usize, 1), cache.refresh_count);
+    const interaction = try document.interactionRevision(fixture.session());
+    try std.testing.expect(try fixture.host.maintain(.unlimited));
+    try std.testing.expect(try fixture.connection.pollInvalidations());
+    try fixture.connection.prepareView(0, 5);
+    const ready = fixture.connection.view().?;
+    try std.testing.expectEqual(junc.Syntax.State.ready, ready.syntax_state);
+    try std.testing.expectEqual(@as(u32, 1), ready.revision);
+    try std.testing.expectEqual(junc.syntax.Category.comment, ready.tokens[0].category);
+    try std.testing.expectEqual(@as(u32, 1), document.revision);
+    try std.testing.expectEqual(interaction, try document.interactionRevision(fixture.session()));
+    try std.testing.expect(!try fixture.host.maintain(.unlimited));
+    try command(&fixture.editor, "ctrl-z", "");
+    try fixture.connection.prepareView(0, 5);
+    try std.testing.expectEqual(junc.Syntax.State.stale, fixture.connection.view().?.syntax_state);
+    try std.testing.expectEqual(@as(usize, 0), fixture.connection.view().?.tokens.len);
+    try std.testing.expectEqual(@as(usize, 2), cache.refresh_count);
 }

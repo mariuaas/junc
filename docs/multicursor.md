@@ -50,4 +50,4 @@ Allocation or semantic failure before publication leaves the cursor-set edit una
 
 Run `zig build test` for Unicode edits, one-step undo, selection replacement, endpoint identity, collision handling, stale/foreign requests, live Lua changes, many-cursor batches, allocation failure and cell rendering. After `zig build`, run `python3 tests/multicursor_terminal.py` for real prefix input, secondary caret styling, two clients, Unicode, resize, reload and terminal restoration.
 
-The hosting protocol is version 4. Save buffers before stopping an older server, then start the rebuilt executable; clients deliberately refuse incompatible servers.
+The hosting protocol is version 5. Save buffers before stopping an older server, then start the rebuilt executable; clients deliberately refuse incompatible servers.

@@ -52,7 +52,7 @@ M-x gives you `open-file`, `switch-buffer`, `save-as` and friends. Tab completes
 
 Note that this will probably change. The project is still early days.
 
-To make it yours, edit [lua/extension.lua](lua/extension.lua) or [lua/presentation.lua](lua/presentation.lua), then hit Ctrl-R. Commands, bindings, colors, the status line: fair game. A bad reload keeps the previous setup. Your document and undo history survive either way. There's also syntax highlighting for Zig, Lua and Fennel.
+To make it yours, edit [lua/extension.lua](lua/extension.lua) or [lua/presentation.lua](lua/presentation.lua), then hit Ctrl-R. Commands, bindings, colors, the status line: fair game. A bad reload keeps the previous setup. Your document and undo history survive either way. There's also syntax highlighting for Zig and Lua.
 
 The wiring diagrams live in `docs/`: [commands and Lua](docs/lua-api.md), [minibuffer](docs/minibuffer.md), [keymaps](docs/keymaps.md), [presentation](docs/presentation.md) and [syntax](docs/syntax.md). The [Litura integration review](docs/litura-multiclient-review.md) covers the remaining protocol limits.
 
